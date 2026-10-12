@@ -1,0 +1,260 @@
+---
+/**
+ * Animated comparison: Uncompressed Context vs 5k Context Window Compression.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = "5k context compression evicts the $3.00/1M carried audio history (caller + played model speech) before quadratic re-billing compounds across long calls.",
+} = Astro.props;
+---
+
+<figure class="diagram-wrapper">
+  <svg viewBox="0 0 840 330" role="img" aria-labelledby="ccf-title ccf-desc" class="ccf-svg">
+    <title id="ccf-title">Context Window Compression: 5k Compaction vs Uncompressed</title>
+    <desc id="ccf-desc">
+      A comparison between an uncompressed session where carried audio history accumulates unchecked toward the 15-minute ceiling,
+      and 5k compression which flushes older $3.00/M carried audio tokens back to 3,500 tokens,
+      halting quadratic re-billing and keeping TTFB fast.
+    </desc>
+
+    <!-- Outer Card Surface -->
+    <rect x="12" y="12" width="816" height="306" rx="14" class="card-bg" />
+
+    <!-- Header Section -->
+    <g class="header-group">
+      <text x="36" y="44" class="main-title">Context Compression: Flushing Stale Audio History</text>
+      <text x="36" y="64" class="main-subtitle">
+        Carried audio history (caller + played model speech) costs $3.00/1M tokens. A 5k trigger flushes stale audio early instead of compounding until the 15-minute ceiling.
+      </text>
+    </g>
+
+    <!-- Lane 1: Uncompressed Window (Compounding Tax) -->
+    <g class="lane-group default-group">
+      <text x="36" y="112" class="lane-title def-title">Uncompressed</text>
+      <text x="36" y="129" class="lane-sub">Unchecked audio growth</text>
+
+      <rect x="180" y="94" width="430" height="52" rx="8" class="meter-bg" />
+
+      <rect x="184" y="98" width="80" height="44" rx="6" class="block-pinned" />
+      <text x="224" y="121" class="block-text">Pinned SOP</text>
+      <text x="224" y="133" class="block-sub">1.5k tokens</text>
+
+      <rect x="268" y="98" width="338" height="44" rx="6" class="bar-audio-growing" />
+      <text x="437" y="121" class="growing-title">Accumulating Carried Audio History ($3.00/M)</text>
+      <text x="437" y="133" class="growing-sub">Turn 1 → Turn 37: 10,900+ tokens re-billed each turn</text>
+
+      <rect x="630" y="94" width="176" height="52" rx="8" class="badge-bg red-badge" />
+      <text x="718" y="116" class="badge-value red-txt">12,400 TOKENS</text>
+      <text x="718" y="134" class="badge-sub red-sub">$3.00/M Quadratic Tax</text>
+    </g>
+
+    <!-- Lane 2: 5k Compression -->
+    <g class="lane-group compress-group">
+      <text x="36" y="210" class="lane-title compress-title">5k Compaction</text>
+      <text x="36" y="227" class="lane-sub">Early FIFO eviction</text>
+
+      <rect x="180" y="192" width="430" height="74" rx="8" class="meter-bg" />
+
+      <rect x="184" y="196" width="80" height="66" rx="6" class="block-pinned" />
+      <text x="224" y="227" class="block-text">Pinned SOP</text>
+      <text x="224" y="240" class="block-sub">1.5k tokens</text>
+
+      <rect x="268" y="196" width="120" height="66" rx="6" class="block-active-dialog" />
+      <text x="328" y="227" class="block-text-green">Active Turns</text>
+      <text x="328" y="240" class="block-sub-green">2.0k recent</text>
+
+      <line x1="472" y1="184" x2="472" y2="274" class="trigger-line" />
+      <rect x="424" y="174" width="96" height="18" rx="4" class="trigger-pill" />
+      <text x="472" y="186" class="trigger-text">5,000t TRIGGER</text>
+
+      <g class="flushed-segment">
+        <rect x="392" y="196" width="80" height="66" rx="6" class="block-flushed" />
+        <text x="432" y="225" class="flushed-title">Old Audio</text>
+        <text x="432" y="238" class="flushed-tag">FLUSHED</text>
+      </g>
+
+      <text x="328" y="280" class="target-label">Target: 3,500 tokens (Older 1.5k audio evicted)</text>
+
+      <rect x="630" y="203" width="176" height="52" rx="8" class="badge-bg green-badge" />
+      <text x="718" y="225" class="badge-value green-txt">3,500 TOKENS</text>
+      <text x="718" y="243" class="badge-sub green-sub">72% CACHE FLUSHED · FAST TTFB</text>
+    </g>
+  </svg>
+
+  <figcaption class="diagram-caption">{caption}</figcaption>
+</figure>
+
+<style>
+  .diagram-wrapper {
+    margin: 2rem 0;
+    padding: 0;
+  }
+  .ccf-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    font-family: var(--sl-font, system-ui, sans-serif);
+    overflow: visible;
+  }
+  .diagram-caption {
+    margin-top: 0.75rem;
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--gl-text-muted);
+    line-height: 1.4;
+  }
+  .card-bg {
+    fill: var(--gl-card-bg);
+    stroke: var(--gl-card-border);
+    stroke-width: 1.5;
+  }
+  .main-title {
+    fill: var(--gl-text-primary);
+    font-size: 15px;
+    font-weight: 700;
+  }
+  .main-subtitle {
+    fill: var(--gl-text-muted);
+    font-size: 11.5px;
+  }
+  .lane-title {
+    font-size: 13.5px;
+    font-weight: 700;
+  }
+  .lane-sub {
+    fill: var(--gl-text-muted);
+    font-size: 10.5px;
+  }
+  .def-title {
+    fill: var(--gl-red-text);
+  }
+  .compress-title {
+    fill: var(--gl-green-text);
+  }
+  .meter-bg {
+    fill: var(--gl-track-bg);
+    stroke: var(--gl-track-border);
+    stroke-width: 1;
+  }
+  .block-pinned {
+    fill: var(--gl-card-bg-elevated);
+    stroke: var(--gl-card-border);
+    stroke-width: 1;
+  }
+  .block-text {
+    fill: var(--gl-text-primary);
+    font-size: 10.5px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+  .block-sub {
+    fill: var(--gl-text-muted);
+    font-size: 9px;
+    text-anchor: middle;
+  }
+  .bar-audio-growing {
+    fill: var(--gl-red-bg);
+    stroke: var(--gl-red-border);
+    stroke-width: 1;
+    animation: growAudioCache 6s ease-in-out infinite;
+  }
+  .growing-title {
+    fill: var(--gl-red-text);
+    font-size: 10px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+  .growing-sub {
+    fill: var(--gl-red-text);
+    font-size: 8.5px;
+    text-anchor: middle;
+  }
+  .block-active-dialog {
+    fill: var(--gl-green-bg);
+    stroke: var(--gl-green-border);
+    stroke-width: 1;
+  }
+  .block-text-green, .block-sub-green, .target-label {
+    fill: var(--gl-green-text);
+    font-size: 9.5px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+  .trigger-line {
+    stroke: #fbbc04;
+    stroke-width: 1.8;
+    stroke-dasharray: 4 3;
+  }
+  .trigger-pill {
+    fill: var(--gl-amber-bg);
+    stroke: var(--gl-amber-border);
+    stroke-width: 1;
+  }
+  .trigger-text {
+    fill: var(--gl-amber-text);
+    font-size: 9px;
+    font-weight: 700;
+    text-anchor: middle;
+    letter-spacing: 0.03em;
+  }
+  .block-flushed {
+    fill: var(--gl-red-bg);
+    stroke: var(--gl-red-border);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+  }
+  .flushed-title, .flushed-tag {
+    fill: var(--gl-red-text);
+    font-size: 9px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .badge-bg {
+    stroke-width: 1;
+  }
+  .red-badge {
+    fill: var(--gl-red-bg);
+    stroke: var(--gl-red-border);
+  }
+  .green-badge {
+    fill: var(--gl-green-bg);
+    stroke: var(--gl-green-border);
+  }
+  .badge-value {
+    font-size: 13px;
+    font-weight: 800;
+    text-anchor: middle;
+    letter-spacing: 0.04em;
+  }
+  .badge-sub {
+    font-size: 9.5px;
+    font-weight: 600;
+    text-anchor: middle;
+    letter-spacing: 0.03em;
+  }
+  .red-txt, .red-sub {
+    fill: var(--gl-red-text);
+  }
+  .green-txt, .green-sub {
+    fill: var(--gl-green-text);
+  }
+  @keyframes growAudioCache {
+    0%, 100% { opacity: 0.65; }
+    50%, 85% { opacity: 1; }
+  }
+  .flushed-segment {
+    animation: evictSegment 6s ease-in-out infinite;
+    transform-origin: 432px 225px;
+  }
+  @keyframes evictSegment {
+    0%, 35%, 95%, 100% { opacity: 0.9; transform: scale(1); }
+    50%, 85% { opacity: 0.2; transform: scale(0.92); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .bar-audio-growing, .flushed-segment {
+      animation: none !important;
+    }
+  }
+</style>

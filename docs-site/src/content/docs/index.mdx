@@ -1,0 +1,118 @@
+---
+title: Gemini Live for Developers
+description: Build production-grade, low-latency, interruptible voice agents on the Gemini Live API.
+template: splash
+hero:
+  tagline: Real-time, bidirectional voice agents on Google's Gemini Live API, from your first WebSocket frame to production.
+  actions:
+    - text: Get started
+      link: /gemini-live/getting-started/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/manishkjs/gemini-live
+      icon: external
+      variant: minimal
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Speech in, speech out in real time
+
+The **Gemini Live API** is a stateful, bidirectional streaming API. Open a single WebSocket, stream 16 kHz microphone audio in, and receive 24 kHz generated speech back as it is produced, with built-in turn-taking and barge-in interruption.
+
+This guide covers the wire protocol, client audio engineering, unit economics, and production patterns required to run voice agents reliably at scale.
+
+### Start here
+
+<CardGrid>
+  <LinkCard
+    title="Getting started"
+    href="/gemini-live/getting-started/"
+    description="Endpoints, authentication, and a 60-line script that produces your first spoken reply."
+  />
+  <LinkCard
+    title="Voice Studio"
+    href="/gemini-live/voice-playground/"
+    description="Talk to a live agent in your browser and compare native duplex vs. cascade pipelines."
+  />
+  <LinkCard
+    title="Gemini Live Skill"
+    href="/gemini-live/gemini-live-skill/"
+    description="Condensed production cheat sheet and downloadable SKILL.md for AI coding agents."
+  />
+</CardGrid>
+
+### Core concepts
+
+<CardGrid>
+  <LinkCard
+    title="Architecture"
+    href="/gemini-live/architecture/"
+    description="Input channels, turn lifecycle signals, barge-in buffers, and session resumption."
+  />
+  <LinkCard
+    title="Configuration reference"
+    href="/gemini-live/gemini-live-configuration/"
+    description="Every wire envelope, setup field, VAD knob, and modality rule in one reference."
+  />
+  <LinkCard
+    title="Audio engineering"
+    href="/gemini-live/audio-engineering/"
+    description="AudioWorklets, adaptive jitter buffers, WebSocket backpressure, and local VAD."
+  />
+  <LinkCard
+    title="Tools & function calling"
+    href="/gemini-live/tools/"
+    description="Non-blocking tool dispatch, barge-in cancellation, and five ways tool calls freeze."
+  />
+  <LinkCard
+    title="Choosing a framework"
+    href="/gemini-live/frameworks/"
+    description="Raw WebSockets vs. Pipecat vs. LiveKit, WebRTC SFU proxies, and native vs. cascade."
+  />
+</CardGrid>
+
+### Economics & optimization
+
+<CardGrid>
+  <LinkCard
+    title="Telephony pricing & tokenomics"
+    href="/gemini-live/pricing/"
+    description="How per-minute rates map to token bills, why multi-turn calls compound, and how to audit usage."
+  />
+  <LinkCard
+    title="Pricing calculator"
+    href="/gemini-live/pricing-calculator/"
+    description="Interactive simulator comparing single-pass, unmanaged duplex, and optimized call costs."
+  />
+  <LinkCard
+    title="Optimization patterns"
+    href="/gemini-live/optimization/"
+    description="Flatten call costs with 5k context compression, JIT prompt cards, and lossless audio pruning."
+  />
+</CardGrid>
+
+### Operate in production
+
+<CardGrid>
+  <LinkCard
+    title="Latency & telemetry"
+    href="/gemini-live/latency-and-telemetry/"
+    description="Measure user-perceived TTFB and avoid the 2 ms frame-interval measurement trap."
+  />
+  <LinkCard
+    title="Deployment"
+    href="/gemini-live/deployment/"
+    description="Deploy stateful WebSocket voice backends to Cloud Run or GKE with session affinity."
+  />
+  <LinkCard
+    title="Troubleshooting"
+    href="/gemini-live/troubleshooting/"
+    description="Decode 1006/1007/1008 close codes, fix echo loops, and recover interrupted greetings."
+  />
+</CardGrid>
+
+:::tip[Native duplex or STT-LLM-TTS cascade?]
+Gemini Live supports **native audio** (one model performs speech-to-speech) alongside traditional **cascade** pipelines (Speech-to-Text -> LLM -> Text-to-Speech). See [Choosing a framework -> Native S2S vs. cascaded STT -> LLM -> TTS](/gemini-live/frameworks/#2-native-s2s-vs-cascaded-stt--llm--tts-inside-frameworks) for the architectural and cost tradeoffs.
+:::

@@ -1,0 +1,312 @@
+---
+/**
+ * Animated comparison: Monolithic System Instruction vs Just-in-Time (JIT) Prompt Cards.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = "When callers hang up in the first 5 seconds (wrong number, IVR bounce, or audio test), monolithic prompts bill full token taxes on Turn 1; JIT Prompt Cards cut bounce token burn by >97%.",
+} = Astro.props;
+---
+
+<figure class="diagram-wrapper">
+  <svg viewBox="0 0 840 330" role="img" aria-labelledby="pcf-title pcf-desc" class="pcf-svg">
+    <title id="pcf-title">Monolithic Prompt vs JIT Prompt Cards in 0 to 5s Bounce Funnel</title>
+    <desc id="pcf-desc">
+      A comparison between a monolithic 4,500-token prompt and dynamic JIT prompt cards.
+      When a caller hangs up at 3 seconds, the monolithic approach bills 4,500 tokens (100% waste),
+      while JIT Prompt Cards bill only 120 tokens for Card 1 (97.3% savings) because Cards 2 and 3 are never loaded.
+    </desc>
+
+    <!-- Outer Card Surface -->
+    <rect x="12" y="12" width="816" height="306" rx="14" class="card-bg" />
+
+    <!-- Header Section -->
+    <g class="header-group">
+      <text x="36" y="44" class="main-title">The 0 to 5s Short-Call Drop Problem</text>
+      <text x="36" y="64" class="main-subtitle">
+        Early hang-ups drop before Turn 2. Upfront monolithic prompt loading inflates unit cost on dropped calls.
+      </text>
+    </g>
+
+    <!-- Call Timeline Header -->
+    <g class="timeline-group">
+      <rect x="180" y="82" width="180" height="46" rx="6" class="bounce-zone-bg" />
+      <text x="270" y="98" class="bounce-zone-title">0 TO 5S EARLY BOUNCE ZONE</text>
+
+      <!-- Track line -->
+      <line x1="180" y1="116" x2="610" y2="116" class="time-track" />
+
+      <!-- Ticks -->
+      <circle cx="180" cy="116" r="3.5" class="time-tick" />
+      <text x="180" y="136" class="time-label">0s (Connect)</text>
+
+      <circle cx="288" cy="116" r="4.5" class="time-tick-drop" />
+      <text x="288" y="136" class="time-label-drop">3s (Hangup)</text>
+
+      <circle cx="360" cy="116" r="3" class="time-tick" />
+      <text x="360" y="136" class="time-label">5s</text>
+
+      <circle cx="480" cy="116" r="3" class="time-tick" />
+      <text x="480" y="136" class="time-label">15s (Discovery)</text>
+
+      <circle cx="610" cy="116" r="3" class="time-tick" />
+      <text x="610" y="136" class="time-label">45s (Close)</text>
+
+      <!-- Animated Call Playhead -->
+      <circle class="playhead-halo" cx="180" cy="116" r="10" />
+      <circle class="playhead-dot" cx="180" cy="116" r="5" />
+
+      <!-- Animated Hangup Ripple at 3s -->
+      <circle class="hangup-ripple" cx="288" cy="116" r="8" />
+    </g>
+
+    <!-- Lane 1: Monolithic Prompt -->
+    <g class="lane-group mono-group">
+      <text x="36" y="185" class="lane-title mono-title">Monolithic</text>
+      <text x="36" y="202" class="lane-sub">All-in-one upfront</text>
+
+      <rect x="180" y="166" width="430" height="52" rx="8" class="mono-bar" />
+      <text x="200" y="189" class="mono-bar-title">Initial System Instruction (4,500 tokens)</text>
+      <text x="200" y="206" class="mono-bar-sub">SOP Rules · 20 Objections · Full Product Catalog · Schemas</text>
+
+      <rect x="630" y="166" width="176" height="52" rx="8" class="badge-bg mono-badge" />
+      <text x="718" y="188" class="badge-value red-txt">4,500 TOKENS</text>
+      <text x="718" y="206" class="badge-sub red-sub">100% Wasted on 3s drop</text>
+    </g>
+
+    <!-- Lane 2: JIT Prompt Cards -->
+    <g class="lane-group jit-group">
+      <text x="36" y="268" class="lane-title jit-title">JIT Cards</text>
+      <text x="36" y="285" class="lane-sub">Phased JIT injection</text>
+
+      <g class="card-opening-group">
+        <rect x="180" y="248" width="128" height="56" rx="8" class="card-active" />
+        <text x="244" y="271" class="card-active-title">Card 1: Opening</text>
+        <text x="244" y="290" class="card-active-sub">120 tokens (Greeting)</text>
+      </g>
+
+      <text x="323" y="280" class="flow-arrow">→</text>
+
+      <g class="card-downstream card-2">
+        <rect x="342" y="248" width="128" height="56" rx="8" class="card-ghost" />
+        <text x="406" y="271" class="card-ghost-title">Card 2: Discovery</text>
+        <text x="406" y="290" class="card-ghost-sub">Skipped (0 tokens)</text>
+      </g>
+
+      <text x="485" y="280" class="flow-arrow">→</text>
+
+      <g class="card-downstream card-3">
+        <rect x="504" y="248" width="106" height="56" rx="8" class="card-ghost" />
+        <text x="557" y="271" class="card-ghost-title">Card 3: Booking</text>
+        <text x="557" y="290" class="card-ghost-sub">Skipped (0 tokens)</text>
+      </g>
+
+      <rect x="630" y="248" width="176" height="56" rx="8" class="badge-bg jit-badge" />
+      <text x="718" y="271" class="badge-value green-txt">120 TOKENS</text>
+      <text x="718" y="291" class="badge-sub green-sub">97.3% TOKEN SAVINGS</text>
+    </g>
+  </svg>
+
+  <figcaption class="diagram-caption">{caption}</figcaption>
+</figure>
+
+<style>
+  .diagram-wrapper {
+    margin: 2rem 0;
+    padding: 0;
+  }
+  .pcf-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    font-family: var(--sl-font, system-ui, sans-serif);
+    overflow: visible;
+  }
+  .diagram-caption {
+    margin-top: 0.75rem;
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--gl-text-muted);
+    line-height: 1.4;
+  }
+  .card-bg {
+    fill: var(--gl-card-bg);
+    stroke: var(--gl-card-border);
+    stroke-width: 1.5;
+  }
+  .main-title {
+    fill: var(--gl-text-primary);
+    font-size: 15px;
+    font-weight: 700;
+  }
+  .main-subtitle {
+    fill: var(--gl-text-muted);
+    font-size: 11.5px;
+  }
+  .bounce-zone-bg {
+    fill: var(--gl-red-bg);
+    stroke: var(--gl-red-border);
+    stroke-width: 1;
+    stroke-dasharray: 4 3;
+  }
+  .bounce-zone-title {
+    fill: var(--gl-red-text);
+    font-size: 9.5px;
+    font-weight: 700;
+    text-anchor: middle;
+    letter-spacing: 0.04em;
+  }
+  .time-track {
+    stroke: var(--gl-track-border);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+  }
+  .time-tick {
+    fill: var(--gl-text-muted);
+  }
+  .time-tick-drop {
+    fill: #ea4335;
+  }
+  .time-label {
+    fill: var(--gl-text-muted);
+    font-size: 10px;
+    text-anchor: middle;
+  }
+  .time-label-drop {
+    fill: var(--gl-red-text);
+    font-size: 10px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .lane-title {
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .lane-sub {
+    fill: var(--gl-text-muted);
+    font-size: 10.5px;
+  }
+  .mono-title {
+    fill: var(--gl-red-text);
+  }
+  .jit-title {
+    fill: var(--gl-green-text);
+  }
+  .mono-bar {
+    fill: var(--gl-red-bg);
+    stroke: var(--gl-red-border);
+    stroke-width: 1.2;
+  }
+  .mono-bar-title {
+    fill: var(--gl-text-primary);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .mono-bar-sub {
+    fill: var(--gl-text-secondary);
+    font-size: 10px;
+  }
+  .card-active {
+    fill: var(--gl-green-bg);
+    stroke: var(--gl-green-border);
+    stroke-width: 1.5;
+  }
+  .card-active-title {
+    fill: var(--gl-text-primary);
+    font-size: 11.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .card-active-sub {
+    fill: var(--gl-green-text);
+    font-size: 9.5px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+  .flow-arrow {
+    fill: var(--gl-text-muted);
+    font-size: 14px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+  .card-ghost {
+    fill: var(--gl-track-bg);
+    stroke: var(--gl-track-border);
+    stroke-width: 1.2;
+    stroke-dasharray: 4 3;
+  }
+  .card-ghost-title {
+    fill: var(--gl-text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+  .card-ghost-sub {
+    fill: var(--gl-text-muted);
+    font-size: 9px;
+    text-anchor: middle;
+  }
+  .badge-bg {
+    stroke-width: 1.5;
+  }
+  .mono-badge {
+    fill: var(--gl-red-bg);
+    stroke: var(--gl-red-border);
+  }
+  .jit-badge {
+    fill: var(--gl-green-bg);
+    stroke: var(--gl-green-border);
+  }
+  .badge-value {
+    font-size: 13px;
+    font-weight: 800;
+    text-anchor: middle;
+    letter-spacing: 0.02em;
+    font-family: var(--sl-font-mono, monospace);
+  }
+  .badge-sub {
+    font-size: 10px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+  .red-txt, .red-sub {
+    fill: var(--gl-red-text);
+  }
+  .green-txt, .green-sub {
+    fill: var(--gl-green-text);
+  }
+  .playhead-dot {
+    fill: var(--sl-color-accent);
+    animation: 6s cubic-bezier(0.25, 0.1, 0.25, 1) infinite playhead-move;
+  }
+  .playhead-halo {
+    fill: var(--gl-blue-bg);
+    animation: 6s cubic-bezier(0.25, 0.1, 0.25, 1) infinite playhead-move;
+  }
+  @keyframes playhead-move {
+    0% { transform: translateX(0px); opacity: 0; }
+    5% { opacity: 1; }
+    40%, 85% { transform: translateX(108px); opacity: 1; }
+    95%, 100% { transform: translateX(108px); opacity: 0; }
+  }
+  .hangup-ripple {
+    fill: none;
+    stroke: #ea4335;
+    stroke-width: 2;
+    opacity: 0;
+    animation: 6s ease-out infinite ripple-pulse;
+  }
+  @keyframes ripple-pulse {
+    0%, 38% { transform: scale(0.8); transform-origin: 288px 116px; opacity: 0; }
+    42% { opacity: 1; stroke-width: 3; }
+    55% { transform: scale(3.5); transform-origin: 288px 116px; opacity: 0; stroke-width: 0.5; }
+    100% { opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .playhead-dot, .playhead-halo, .hangup-ripple {
+      animation: none !important;
+    }
+  }
+</style>

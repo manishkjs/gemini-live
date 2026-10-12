@@ -1,0 +1,235 @@
+---
+title: Getting started
+description: "From zero to a working Gemini Live voice turn: endpoints, authentication, code, and common setup pitfalls."
+---
+
+import { Steps, Aside, Badge } from '@astrojs/starlight/components';
+import HandshakeSequence from '../../components/HandshakeSequence.astro';
+
+You can have a Gemini Live agent talking back to you in about fifteen minutes.
+
+<Aside type="tip" title="The protocol in one sentence">
+Open a WebSocket, send **`setup`** as the first frame and wait for **`setupComplete`**, then stream 16 kHz PCM audio in and play 24 kHz PCM audio out.
+</Aside>
+
+## 1. Pick your surface
+
+Google AI Studio and Vertex AI run on the same underlying Gemini Live models and Google Cloud Billing infrastructure. Choose based on your authentication and compliance requirements:
+
+| Dimension | **Google AI Studio** <Badge text="API key" variant="success" /> | **Vertex AI** <Badge text="IAM / Enterprise" variant="note" /> |
+| --- | --- | --- |
+| **When to choose** | Fast setup with API keys and tiered Cloud Billing rate limits | Workloads requiring HIPAA, SOC 2, VPC-SC, CMEK, or regional data residency |
+| **Host** | `generativelanguage.googleapis.com` | `us-central1-aiplatform.googleapis.com` |
+| **API version** | `v1alpha` / `v1beta` | `v1beta1` |
+| **WebSocket path** | `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` |
+| **Auth** | API key (`?key=$GEMINI_API_KEY`) | OAuth bearer token (ADC / service account) |
+| **Model form** | `models/<model>` | `projects/<ID>/locations/us-central1/publishers/google/models/<model>` |
+
+## 2. Authenticate
+
+### Path A: Google AI Studio (API key)
+
+Create an API key in [Google AI Studio](https://aistudio.google.com/apikey) linked to a Cloud Billing project:
+
+```bash
+export GEMINI_API_KEY="your-gemini-api-key"
+```
+
+### Path B: Vertex AI (IAM / Application Default Credentials)
+
+<Steps>
+
+1. **Enable the Vertex AI API and set your project.**
+
+   ```bash
+   export PROJECT_ID="your-project-id"
+   export LOCATION="us-central1"
+
+   gcloud config set project "$PROJECT_ID"
+   gcloud services enable aiplatform.googleapis.com
+   ```
+
+2. **Grant the required IAM role.** Gemini Live requires `aiplatform.endpoints.predict` (included in `roles/aiplatform.user`).
+
+   ```bash
+   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+     --member="user:$(gcloud config get-value account)" \
+     --role="roles/aiplatform.user"
+   ```
+
+   If you also run a cascade pipeline (STT -> LLM -> TTS), add `roles/speech.client` and `roles/texttospeech.client`.
+
+3. **Configure Application Default Credentials and the quota project.**
+
+   ```bash
+   gcloud auth application-default login
+   gcloud auth application-default set-quota-project "$PROJECT_ID"
+   ```
+
+   <Aside type="caution" title="Always set the quota project">
+   Skipping `set-quota-project` is the most common Vertex AI setup failure. Your token authenticates, but requests fail with quota or permission errors because no billing project is attached to the ADC credentials.
+   </Aside>
+
+</Steps>
+
+## 3. Your first voice turn
+
+This script opens a Live session, sends a text prompt, and writes the model's spoken reply to `reply.wav`:
+
+```bash
+pip install "google-genai>=1.0.0"
+```
+
+```python title="first_turn.py"
+import asyncio, os, wave
+from google import genai
+from google.genai import types
+
+MODEL = "gemini-3.1-flash-live-preview"
+
+# Option A: Vertex AI (ADC / Service Account)
+client = genai.Client(
+    vertexai=True,
+    project=os.environ["PROJECT_ID"],
+    location=os.environ.get("LOCATION", "us-central1"),
+)
+
+# Option B: Google AI Studio (API key)
+# client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+
+config = types.LiveConnectConfig(
+    # Request AUDIO only. Requesting ["AUDIO", "TEXT"] closes with 1007.
+    response_modalities=["AUDIO"],
+    system_instruction="You are a warm, concise voice assistant. Keep replies short.",
+    speech_config=types.SpeechConfig(
+        voice_config=types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede")
+        )
+    ),
+    thinking_config=types.ThinkingConfig(
+        thinking_level="minimal",
+        include_thoughts=False,
+    ),
+    # Enable output transcription to receive text alongside audio.
+    output_audio_transcription=types.AudioTranscriptionConfig(),
+)
+
+async def main() -> None:
+    async with client.aio.live.connect(model=MODEL, config=config) as session:
+        await session.send_client_content(
+            turns=types.Content(
+                role="user",
+                parts=[types.Part(text="Say hello and tell me one fact about the ocean.")],
+            ),
+            turn_complete=True,
+        )
+
+        pcm = bytearray()
+        async for message in session.receive():
+            sc = message.server_content
+            if not sc:
+                continue
+            if sc.model_turn:
+                for part in sc.model_turn.parts:
+                    if part.inline_data and part.inline_data.data:
+                        pcm.extend(part.inline_data.data)
+            if sc.output_transcription and sc.output_transcription.text:
+                print(sc.output_transcription.text, end="", flush=True)
+            if sc.turn_complete:
+                break
+
+    # Output audio is 24 kHz, 16-bit, mono PCM.
+    with wave.open("reply.wav", "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(24000)
+        f.writeframes(bytes(pcm))
+    print(f"\nWrote reply.wav ({len(pcm) / 48000:.1f}s)")
+
+asyncio.run(main())
+```
+
+```bash
+PROJECT_ID="$PROJECT_ID" python first_turn.py
+# Play reply.wav (macOS: `open reply.wav`, Linux: `xdg-open reply.wav`)
+```
+
+## 4. What the raw protocol looks like
+
+The SDK handles the WebSocket handshake for you. When building a custom backend proxy, implement this exact frame sequence:
+
+<HandshakeSequence />
+
+A production `setup` frame:
+
+```json
+{
+  "setup": {
+    "model": "projects/PROJECT_ID/locations/us-central1/publishers/google/models/gemini-3.1-flash-live-preview",
+    "systemInstruction": {
+      "parts": [{ "text": "You are a warm, concise voice assistant." }]
+    },
+    "generationConfig": {
+      "responseModalities": ["AUDIO"],
+      "thinkingConfig": {
+        "thinkingLevel": "minimal",
+        "includeThoughts": false
+      },
+      "speechConfig": {
+        "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": "Aoede" } }
+      }
+    },
+    "outputAudioTranscription": {},
+    "realtimeInputConfig": {
+      "automaticActivityDetection": {
+        "startOfSpeechSensitivity": "START_SENSITIVITY_HIGH",
+        "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+        "prefixPaddingMs": 200,
+        "silenceDurationMs": 500
+      }
+    },
+    "sessionResumption": {},
+    "contextWindowCompression": {
+      "triggerTokens": 5000,
+      "slidingWindow": { "targetTokens": 3500 }
+    }
+  }
+}
+```
+
+The server replies with `{"setupComplete": {"sessionId": "<UUID>"}}`. Log `sessionId`: it persists across reconnects and is the primary trace key for the call.
+
+## 5. Audio formats
+
+| Direction | Format |
+| --- | --- |
+| **Input** (client -> model) | 16 kHz, 16-bit little-endian, **mono** PCM (`audio/pcm;rate=16000`) |
+| **Output** (model -> client) | 24 kHz, 16-bit, **mono** PCM (`audio/pcm;rate=24000`) |
+
+Input and output sample rates differ. Playing 24 kHz output at 16 kHz sounds slowed down; playing 16 kHz at 24 kHz sounds fast and high-pitched. Always enable `echoCancellation: true` in `getUserMedia` and run PCM capture inside an `AudioWorklet` (see [Audio engineering](/gemini-live/audio-engineering/)).
+
+## 6. Six common setup failures
+
+1. **Sending frames before `setupComplete`**: `setup` must be the first frame and must travel alone. Gate all audio and text sends until `setupComplete` arrives.
+2. **Requesting `["AUDIO", "TEXT"]`**: A session returns audio or text, never both as modalities. Requesting both closes the socket with code **`1007`**. Use `outputAudioTranscription` for text alongside speech.
+3. **Treating 10 to 15 minute rotation as a crash**: The server emits `sessionResumptionUpdate` and closes with **`1008`** every 10 to 15 minutes. Reconnect using the resumption handle.
+4. **Mutating `systemInstruction` mid-session**: System instructions in `setup` are immutable for that socket connection. To inject mid-call phase instructions without reopening the socket, see [Dynamic prompt cards & phase gates](/gemini-live/optimization/#pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor).
+5. **Testing through an HTTP proxy that drops WebSocket upgrades**: If you see immediate **`1006`** closes on a remote VM, forward the port over SSH (`ssh -L 7860:localhost:7860 user@your-dev-vm`) and open `http://localhost:7860/`.
+6. **Not flushing playback on `interrupted`**: When the user barges in, immediately clear your client audio playout queue.
+
+For full diagnostics on close codes (`1000`, `1006`, `1007`, `1008`, `1011`), see [Troubleshooting](/gemini-live/troubleshooting/).
+
+## 7. Pre-launch verification checklist
+
+- [ ] `setupComplete` arrives and `sessionId` is logged.
+- [ ] `reply.wav` plays back at natural pitch (24 kHz mono).
+- [ ] `outputTranscription` fragments match the spoken audio.
+- [ ] Speaking over the agent triggers `interrupted` and flushes queued audio immediately.
+- [ ] A 20-minute call survives session rotation via `sessionResumptionUpdate`.
+- [ ] `usageMetadata` is logged once per turn to track token consumption.
+
+## Next steps
+
+- **[Architecture](/gemini-live/architecture/)**: Understand `realtimeInput` vs. `clientContent`, turn lifecycle signals, and session resumption.
+- **[Audio engineering](/gemini-live/audio-engineering/)**: Implement `AudioWorklet` capture, adaptive jitter buffers, and instant barge-in.
+- **[Telephony pricing & tokenomics](/gemini-live/pricing/)**: Understand how multi-turn duplex sessions are billed and how to keep costs around $0.031/min.

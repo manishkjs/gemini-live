@@ -1,0 +1,137 @@
+---
+title: Audio engineering
+description: "Worklets, jitter buffers, backpressure, and client-side VAD: client-side engineering for production voice quality."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+When a voice agent sounds choppy, talks over itself, or takes 400 ms to register a barge-in, the culprit is almost always the **client audio path** rather than the model.
+
+Clean the signal at capture time, move PCM processing off the main UI thread, and buffer adaptively in both directions.
+
+## Clean the signal at the source
+
+Downstream VAD and transcription inherit the quality of your microphone capture. Enable hardware/browser acoustic processing before sending a single frame:
+
+```javascript
+const stream = await navigator.mediaDevices.getUserMedia({
+  audio: {
+    sampleRate: 16000,
+    echoCancellation: true,    // prevents speaker output from triggering VAD
+    noiseSuppression: true,    // improves SNR in noisy environments
+    autoGainControl: true,     // normalizes volume across different mics
+    channelCount: 1,           // mono PCM
+  },
+});
+```
+
+<Aside type="danger" title="Echo cancellation prevents self-interruption loops">
+Without `echoCancellation: true`, speaker playback leaks into the microphone. Server VAD detects that leaked audio as user speech and fires `interrupted`, causing the agent to cut itself off every time it speaks.
+</Aside>
+
+`autoGainControl` is equally important across consumer hardware: laptop mics, Bluetooth earbuds, and USB headsets vary by tens of decibels. Normalizing input gain keeps VAD thresholds consistent across devices.
+
+## Move audio off the main thread
+
+Use an **`AudioWorklet`** for PCM capture and resampling. Worklets execute on a dedicated real-time audio rendering thread, isolating capture from React re-renders, DOM layout, and main-thread garbage collection pauses.
+
+<Aside type="caution">
+Avoid `ScriptProcessorNode`. It is deprecated and runs on the main UI thread, dropping audio frames whenever the browser is busy rendering.
+</Aside>
+
+```javascript
+await audioContext.audioWorklet.addModule('/pcm-capture-worklet.js');
+const capture = new AudioWorkletNode(audioContext, 'pcm-capture');
+capture.port.onmessage = (e) => sendPcmChunk(e.data); // Int16Array, 16 kHz
+source.connect(capture);
+```
+
+A minimal `/pcm-capture-worklet.js` converts Float32 Web Audio samples into 16-bit little-endian PCM with clipping protection:
+
+```javascript title="pcm-capture-worklet.js"
+class PcmCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const channel = inputs[0]?.[0];
+    if (!channel) return true;
+    const pcm16 = new Int16Array(channel.length);
+    for (let i = 0; i < channel.length; i++) {
+      const s = Math.max(-1, Math.min(1, channel[i]));
+      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
+    return true;
+  }
+}
+registerProcessor('pcm-capture', PcmCaptureProcessor);
+```
+
+## Buffer adaptively in both directions
+
+Network packet arrival is uneven. Use two small buffers to smooth transport jitter:
+
+| Buffer | Location | Purpose |
+| --- | --- | --- |
+| **Input ring buffer** | Mic -> WebSocket | Absorbs capture bursts and holds frames briefly during socket congestion. |
+| **Output jitter buffer** | WebSocket -> Speaker | Queues 150 to 200 ms of incoming 24 kHz PCM chunks before starting steady playout. |
+
+Scale output buffer depth based on measured inter-arrival jitter rather than hardcoding a large fixed delay.
+
+<Aside type="tip" title="Using the 200 ms jitter buffer as a compliance guardrail">
+Playing the first audio chunk at 0 ms buffer depth causes audible underruns whenever a network packet arrives late. Queuing 150 to 200 ms of audio eliminates stutter and enables **pre-speech compliance filtering**: because `outputTranscription` text arrives ahead of buffered audio playout, your backend can evaluate text against policy rules and flush the 200 ms buffer before a prohibited phrase reaches the speaker. See [Optimization patterns -> Pre-speech compliance guardrails](/gemini-live/optimization/#pre-speech-compliance-guardrails-200ms-jitter-buffer).
+</Aside>
+
+## Respect WebSocket backpressure
+
+`WebSocket.send()` queues data in memory even when the network link is saturated. If you do not check `socket.bufferedAmount`, seconds of stale audio pile up in the browser buffer and arrive late.
+
+```javascript
+const HIGH_WATER_MARK = 256 * 1024; // 256 KB
+
+function sendPcmChunk(chunk) {
+  if (socket.bufferedAmount > HIGH_WATER_MARK) {
+    // Hold in a bounded client ring buffer or drop oldest frames
+    outboundRingBuffer.pushBounded(chunk);
+    return;
+  }
+  socket.send(chunk);
+}
+```
+
+### Circuit breaker for degraded links
+
+<Steps>
+
+1. Track consecutive WebSocket send or heartbeat timeouts.
+2. When failures cross your threshold, trip the breaker: pause audio transmission and surface a "reconnecting" indicator.
+3. Reconnect with exponential backoff using your stored `sessionResumption` handle.
+4. Once `setupComplete` arrives and unconfirmed messages are replayed, close the breaker and resume streaming.
+
+</Steps>
+
+## Split local and server VAD for instant barge-in
+
+Server-side VAD is authoritative for turn state, but waiting for a network round trip adds 100 to 250 ms before speaker playback stops. Combine local and server VAD for sub-50 ms barge-in response:
+
+- **Local VAD controls the speaker**: Monitor microphone energy or Silero VAD on the client. As soon as sustained user speech is detected locally, immediately pause speaker playback and clear the output jitter buffer.
+- **Server VAD controls the conversation**: Keep streaming microphone audio continuously to the server and let its `interrupted` event govern turn state.
+
+<Aside type="note">
+Do not use client-side VAD to gate which microphone frames you send to the server. Clipping the leading consonants of user speech degrades transcription and native audio comprehension far more than streaming silence.
+</Aside>
+
+## Turn coverage (`turnCoverage`)
+
+Under `realtimeInputConfig`, `turnCoverage` controls which audio frames are included in the user's turn context:
+
+| Setting | Behavior | Recommended use |
+| --- | --- | --- |
+| **`TURN_INCLUDES_ALL_INPUT`** | Includes all audio, including speech while the model was talking | **Default for duplex voice**: preserves full caller context during barge-in |
+| `TURN_INCLUDES_ONLY_ACTIVITY` | Includes only segments flagged as active speech | High-noise environments where ambient background speech would pollute context |
+
+## Production audio checklist
+
+- [ ] `echoCancellation`, `noiseSuppression`, and `autoGainControl` enabled in `getUserMedia`.
+- [ ] PCM capture and 16 kHz resampling execute inside an `AudioWorklet`.
+- [ ] Output playout uses an adaptive 150 to 200 ms jitter buffer at 24 kHz.
+- [ ] `socket.bufferedAmount` is checked before every `send()`.
+- [ ] Local VAD halts speaker playout immediately on barge-in, while `interrupted` flushes any newly arrived chunks.
