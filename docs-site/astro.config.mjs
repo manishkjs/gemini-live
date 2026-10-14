@@ -49,7 +49,13 @@ export default defineConfig({
           items: [
             { label: 'Architecture', slug: 'architecture' },
             { label: 'Configuration reference', slug: 'gemini-live-configuration' },
-            { label: 'Audio engineering', slug: 'audio-engineering' },
+            {
+              label: 'Audio engineering',
+              items: [
+                { label: 'Capture, buffers & backpressure', slug: 'audio-engineering' },
+                { label: 'Noise, background speech & VAD', slug: 'audio-engineering/noise-and-vad' },
+              ],
+            },
             { label: 'Tools & function calling', slug: 'tools' },
             { label: 'Choosing a framework', slug: 'frameworks' },
           ],

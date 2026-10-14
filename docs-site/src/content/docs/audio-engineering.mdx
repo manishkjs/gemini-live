@@ -135,3 +135,4 @@ Under `realtimeInputConfig`, `turnCoverage` controls which audio frames are incl
 - [ ] Output playout uses an adaptive 150 to 200 ms jitter buffer at 24 kHz.
 - [ ] `socket.bufferedAmount` is checked before every `send()`.
 - [ ] Local VAD halts speaker playout immediately on barge-in, while `interrupted` flushes any newly arrived chunks.
+- [ ] For noisy rooms, PSTN telephony filters (`KrispVivaFilter`, `RNNoiseFilter`), background speech isolation, and cough/backchannel recovery, see [Noise, background speech & VAD](/gemini-live/audio-engineering/noise-and-vad/).
