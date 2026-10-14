@@ -247,6 +247,10 @@ Every field you include in `context_update` replaces (does not merge) the previo
 }
 ```
 
+:::danger[An empty `"tools": {}` clears every tool]
+The `tools` wrapper exists so the server can tell "no tools update" apart from "clear all tools". If the `tools` key is absent, the current tools stay. If it is present, even as an empty object, the server replaces the tool list with what you sent, and `{}` means no tools. A serializer that always writes a default `"tools": {}` when you only meant to update `systemInstruction` removes every tool for the rest of the call, and the server sends no error. Omit the `tools` key unless you mean to change the tools.
+:::
+
 #### Minimal Python helper (send inside a blocking tool call before returning the result)
 
 ```python
@@ -305,4 +309,81 @@ async def advance_card_and_tools(
 ```
 
 For the animated walkthrough of how Gemini Live stores instructions versus history, the 8-step flight-booking breakdown, and the complete tool-handler code, see [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini-live/optimization/prompt-cards/).
+
+---
+
+## 8. What to put in a FunctionResponse
+
+Every tool result is added to the conversation history and billed again on every later turn. It also sits right before the point where the model starts generating audio, so its wording steers the next reply more than anything else in the prompt. Keep it short, and split it into fields the model speaks and fields it only reads.
+
+### The compact response contract
+
+When a tool call moves the call to a new phase, put the full card in `systemInstruction` (see [section 7](#7-changing-tools-and-instructions-during-a-call)) and return only:
+
+| Field | What it holds | Size |
+| :--- | :--- | :--- |
+| `call_state` | Confirmed facts so far: `"Language: Hindi \| Trip: one-way BLR to DEL, 18 Oct \| Adults: 2"` | Under 60 tokens |
+| `instruction` | What to say or ask next | One sentence |
+| `prompt_card` | A pointer, not the card: `"Prompt card 4 of 8 (Return Flight Selection) is now in your system instruction. Follow it."` | One line |
+| `vocal_tone` | The voice and accent reminder (see below) | One line |
+| spoken fields | `facts`, `ask_say`, `note_say`, any `*_say` or `*_spell` field | As short as the reply allows |
+
+Do not repeat a multi-hundred-token phase card in every tool result. Fourteen tool calls that each carried a ~495-token card added about 6,900 tokens of history in one call. A one-line pointer instead of the full card saves about 550 to 680 history tokens per card change.
+
+### Format numbers in code, not in the model's speech
+
+The audio model is weakest at formatting while it speaks. Do the formatting in your handler and return ready-to-say strings:
+
+| Raw value | Spoken field | What the handler returns |
+| :--- | :--- | :--- |
+| `fare: 4500` | `fare_say` | `"₹4,500 (four thousand five hundred rupees)"`, or the same amount in the caller's script for Hindi or Tamil |
+| `depart: "06:20"` | `depart_say` | `"6:20 AM"` |
+| `flight: "XY 2134"` | `flight_say` | `"X Y two one three four"` |
+| `name: "SACHIN"` | `first_spell` | `"S as in Sierra, A as in Alpha, C as in Charlie, H as in Hotel, I as in India, N as in November"` |
+
+```python
+def rupees(amount: int) -> str:
+    """Indian digit grouping plus words: 150000 -> '₹1,50,000 (one lakh fifty thousand rupees)'."""
+    digits = str(amount)
+    head, tail = digits[:-3], digits[-3:]
+    while len(head) > 2:
+        tail = f"{head[-2:]},{tail}"
+        head = head[:-2]
+    grouped = f"{head},{tail}" if head else tail
+    words = number_to_words(amount)  # your own helper, or num2words(amount, lang="en_IN")
+    return f"₹{grouped} ({words} rupees)"
+
+
+def clock(hhmm: str) -> str:
+    hour, minute = map(int, hhmm.split(":"))
+    suffix = "AM" if hour < 12 else "PM"
+    return f"{hour % 12 or 12}:{minute:02d} {suffix}"
+```
+
+### Tell the model which fields to speak
+
+Add one rule to the base system instruction that lists the spoken fields and the private ones:
+
+```text
+Tool results are private guidance. Speak only their spoken fields, in the caller's language:
+facts, ask_say, heads_up, note_say, change, any field ending in _say or _spell (exactly as given),
+and any field the current step or the instruction tells you to read.
+Never speak instruction, prompt_card, call_state, or vocal_tone.
+If a result has an error field, do not read it. Fix the argument it names and call the tool once more,
+unless its instruction says otherwise.
+```
+
+### Keep the accent after tool calls: `vocal_tone`
+
+The system instruction sits at the top of the prompt. After three or four audio turns, it is thousands of tokens away from the decode point, while the newest tool result is right next to it. A result full of English JSON keys and values can then pull the voice toward the model's default US English accent. Repeat a one-line tone reminder inside every tool result:
+
+```python
+VOCAL_TONE = "Warm Indian English or everyday Hinglish female voice, Indian accent on every word"
+
+
+def respond(payload: dict, call_state: str) -> dict:
+    return {**payload, "call_state": call_state, "vocal_tone": VOCAL_TONE}
+```
+
+Keep the same wording as the accent line in your system instruction, and list `vocal_tone` among the fields the model never speaks. In field testing on Indian-English agents, this removed most post-tool accent drift.
 

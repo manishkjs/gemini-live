@@ -154,73 +154,98 @@ You do not need a wrapper class to use `context_update`. Inside your blocking to
 
 ```python
 import json
+from typing import Optional
+
 from google.genai import types
+
+VOCAL_TONE = "Warm Indian English or everyday Hinglish female voice, Indian accent on every word"
 
 
 async def send_context_update(
     session,
-    system_instruction: str,
-    tool_declarations: list[dict],
+    system_instruction: Optional[str] = None,
+    tool_declarations: Optional[list[dict]] = None,
 ) -> None:
-    """Replace systemInstruction and active tools in place on Vertex AI gemini-3.8-live.
+    """Replace systemInstruction and/or the active tools on Vertex AI gemini-3.8-live.
 
-    Pass tool_declarations=[] to clear all tools (sends {"tools": {}}).
+    tool_declarations=None  -> omit "tools"; the current tools stay
+    tool_declarations=[]    -> send {"tools": {}}; clears all tools (talk-only card)
+    tool_declarations=[...] -> replace the tools with this list
     """
-    frame = {
-        "context_update": {
-            "systemInstruction": {"parts": [{"text": system_instruction}]},
-            "tools": (
-                {"tools": [{"functionDeclarations": tool_declarations}]}
-                if tool_declarations
-                else {}
-            ),
-        }
-    }
-    await session._ws.send(json.dumps(frame))
+    update = {}
+    if system_instruction is not None:
+        update["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+    if tool_declarations is not None:
+        update["tools"] = (
+            {"tools": [{"functionDeclarations": tool_declarations}]} if tool_declarations else {}
+        )
+    if update:
+        await session._ws.send(json.dumps({"context_update": update}))
 
 
-async def on_tool_call(session, function_call, active_tool_names: set[str], run_step):
-    # function_call is one item from server_message.tool_call.function_calls
+async def on_tool_call(session, function_call, call: dict, run_step):
+    # call holds per-call state: {"card": 1, "tool_names": {...}, "instruction": "..."}
     # 1. Guard against the model imitating an old tool call from earlier history turns
-    if function_call.name not in active_tool_names:
+    if function_call.name not in call["tool_names"]:
         await session.send_tool_response(
             function_responses=[
                 types.FunctionResponse(
                     id=function_call.id,
                     name=function_call.name,
-                    response={"error": f"{function_call.name} is not active in this step."},
+                    response={
+                        "error": f"{function_call.name} is not active in this step.",
+                        "instruction": "Do not call it again. Continue the current step.",
+                    },
                 )
             ]
         )
         return
 
-    # 2. Run your business logic -> get next card text, session state, and next card's tools
-    next_instruction, next_tool_decls, next_tool_names = run_step(
-        function_call.name, function_call.args or {}
-    )
-    active_tool_names.clear()
-    active_tool_names.update(next_tool_names)
+    # 2. Run your business logic. step holds the card number and title, the full instruction
+    #    text (base rules + card + session state), the card's tools, a one-line call_state,
+    #    a one-sentence next instruction, and any *_say fields to speak.
+    step = run_step(function_call.name, function_call.args or {})
+    card_changed = step.number != call["card"]
 
-    # 3. Swap systemInstruction + tools while the model is paused waiting on this tool result
-    await send_context_update(session, next_instruction, next_tool_decls)
+    # 3. While the model is paused on this result: swap tools only on a card change, and
+    #    refresh systemInstruction only when the card or the session state changed.
+    if card_changed:
+        call["card"], call["tool_names"] = step.number, set(step.tool_names)
+        await send_context_update(session, step.instruction_text, step.tool_declarations)
+    elif step.instruction_text != call["instruction"]:
+        await send_context_update(session, step.instruction_text)  # no "tools" key
+    call["instruction"] = step.instruction_text
 
-    # 4. Return a 1-line pointer instead of repeating the 600-token card in history
+    # 4. Return the compact contract; the 1-line card pointer only when the card changed
+    response = {
+        **step.spoken_fields,  # e.g. {"ask_say": "How many people are travelling?"}
+        "call_state": step.call_state,  # under 60 tokens of confirmed facts
+        "instruction": step.next_instruction,  # one sentence
+        "vocal_tone": VOCAL_TONE,
+    }
+    if card_changed:
+        response["prompt_card"] = (
+            f"Prompt card {step.number} of 8 ({step.title}) is now in your system instruction. Follow it."
+        )
     await session.send_tool_response(
         function_responses=[
-            types.FunctionResponse(
-                id=function_call.id,
-                name=function_call.name,
-                response={"status": "ok", "guidance": "Follow the current step in your system instruction."},
-            )
+            types.FunctionResponse(id=function_call.id, name=function_call.name, response=response)
         ]
     )
 ```
 
+See [Tools -> What to put in a FunctionResponse](/gemini-live/tools/#8-what-to-put-in-a-functionresponse) for the spoken-field rule and why `vocal_tone` rides in every result.
+
 :::caution[`context_update` is exposed on the wire, but not yet in public documentation or the SDK]
 - No released version of `google-genai` has a typed helper for `context_update`, and no public Google documentation page describes it yet. You write raw JSON to `session._ws.send(...)`.
 - It works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`). Google AI Studio ignores it, and `gemini-live-2.5-flash-native-audio` rejects it and closes with `1007` (use `role="system"` client content on 2.5 instead).
-- Every `context_update` replaces (does not merge) the declared tools. Keep global tools like `set_call_language` in every card's list, and send `"tools": {}` when you want to clear all tools.
+- Every `context_update` replaces (does not merge) the declared tools. Keep global tools like `set_call_language` in every card's list.
+- An empty `"tools": {}` clears all tools. Send it only on a talk-only card. If your code writes a default `"tools": {}` when you meant to update only `systemInstruction`, every tool disappears for the rest of the call with no error. Leave the `tools` key out instead.
 :::
+
+### The opening card and the in-call line
+
+Card 1 lives only in the setup instruction, together with the greeting rule (`START`) and a language-neutral Turn-0 stub (`"(The call has connected. The caller has not spoken yet.)"`). From the first card change onward, every system-instruction update replaces `START` with an `IN_CALL` line ("The greeting and the language choice are done. Never greet again."). A later trim or reconnect then cannot bring the greeting back. See [Prompt engineering -> Opening the call](/gemini-live/prompt-engineering/#opening-the-call-a-language-neutral-turn-0-stub).
 
 ---
 

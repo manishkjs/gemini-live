@@ -213,7 +213,7 @@ Input and output sample rates differ. Playing 24 kHz output at 16 kHz sounds slo
 1. **Sending frames before `setupComplete`**: `setup` must be the first frame and must travel alone. Gate all audio and text sends until `setupComplete` arrives.
 2. **Requesting `["AUDIO", "TEXT"]`**: A session returns audio or text, never both as modalities. Requesting both closes the socket with code **`1007`**. Use `outputAudioTranscription` for text alongside speech.
 3. **Treating 10 to 15 minute rotation as a crash**: The server emits `sessionResumptionUpdate` and closes with **`1008`** every 10 to 15 minutes. Reconnect using the resumption handle.
-4. **Mutating `systemInstruction` mid-session**: System instructions in `setup` are immutable for that socket connection. To inject mid-call phase instructions without reopening the socket, see [Dynamic prompt cards & phase gates](/gemini-live/optimization/#pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor).
+4. **Resending `setup` to change `systemInstruction`**: `setup` is the first frame only. To change instructions mid-call, send `clientContent` with `role="system"` and `turn_complete=False`, or `context_update` on Vertex AI `gemini-3.8-live`. Both replace the whole instruction in place. See [Pillar 2: Dynamic prompt cards](/gemini-live/optimization/prompt-cards/).
 5. **Testing through an HTTP proxy that drops WebSocket upgrades**: If you see immediate **`1006`** closes on a remote VM, forward the port over SSH (`ssh -L 7860:localhost:7860 user@your-dev-vm`) and open `http://localhost:7860/`.
 6. **Not flushing playback on `interrupted`**: When the user barges in, immediately clear your client audio playout queue.
 
