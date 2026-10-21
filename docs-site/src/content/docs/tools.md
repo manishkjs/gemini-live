@@ -162,7 +162,7 @@ A call often moves through stages. First you verify the caller, then you fix the
 | The instructions only | `await session.send_context_update(system_instruction="...")` (`gemini-3.8-live`), or `clientContent` with `role="system"` and `turn_complete=False` (Vertex AI, including Gemini 2.5 native audio) | Yes, documented |
 | The tool list on models that do not support `contextUpdate` (such as Gemini 2.5 native audio) | Open a new session with the new `setup.tools` | Yes, documented |
 
-### Change the instructions: send a system turn
+### Change the instructions: send a system turn (Vertex AI)
 
 ```python
 await session.send_client_content(
@@ -215,7 +215,7 @@ Sending `send_context_update` inside a blocking tool handler (right before retur
 
 :::caution[Operational rules for `send_context_update`]
 - **Update at major stage transitions, not on every turn**: `system_instruction` and `tools` sit in the model preamble, so every update invalidates the prefix cache. Swap them when the conversation moves to a new phase card (for example, `3 to 8 times` in a multi-step call), not on turns where nothing changed.
-- **Set at least one field**: Calling `await session.send_context_update()` with both `system_instruction=None` and `tools=None` raises `ValueError("At least one of `system_instruction` or `tools` must be set.")`.
+- **Set at least one field**: Calling `await session.send_context_update()` with both `system_instruction=None` and `tools=None` raises ``ValueError("At least one of `system_instruction` or `tools` must be set.")``.
 - **Full replacement (no merge)**: Every field you set replaces the previous value. Include global tools (such as `set_call_language`) in each card's `tools` list, and pass `base_rules + current_card + session_state` in `system_instruction`.
 - **Check active tools before running**: Removing a tool declaration does not remove earlier `function_call` turns from conversation history, so the model can occasionally imitate an old call. Check incoming tool calls against the current card's active tool list before running them.
 - **Model & SDK compatibility**: `session.send_context_update()` is in `google-genai >= 2.32.0` and serializes `contextUpdate` for both Vertex AI and the Gemini Developer API. On Vertex AI (`gemini-3.8-live`) it is ungated; on the Gemini Developer API, confirm your API key has server-side `contextUpdate` access before relying on it in production. Legacy `gemini-live-2.5-flash-native-audio` rejects `contextUpdate` with `1007` (use `send_client_content` with `role="system"` on Vertex AI 2.5 instead). If your non-Python SDK release has no context-update helper yet, send the raw `contextUpdate` JSON frame below.
