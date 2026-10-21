@@ -4,6 +4,14 @@ description: Model your multi-turn Gemini Live voice session costs and compare u
 ---
 
 import TelephonyCostCalculator from '../../components/TelephonyCostCalculator.astro';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="An interactive calculator: enter call length, turns per minute, and prompt size, and compare unmanaged against optimized cost per call and per minute."
+  why="It lets you put your own traffic numbers into the business case instead of relying on the worked examples."
+  number="Optimized calls hold at about $0.031 per minute regardless of length."
+  decide="What volume and call length you plan for, and the budget line that follows from it."
+/>
 
 Use the interactive simulator below to model how call duration, turn frequency, system prompt size, and context management affect your per-minute and per-call unit economics.
 

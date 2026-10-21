@@ -3,6 +3,19 @@ title: Configuration reference
 description: The wire envelopes, the setup frame, prompting rules for native audio, and every session option in one reference guide.
 ---
 
+<aside class="one-minute" aria-label="In one minute">
+  <div class="one-minute-head">
+    <span class="badge badge-blue">In one minute</span>
+    <span class="one-minute-audience">For product managers and solution architects</span>
+  </div>
+  <dl class="one-minute-grid">
+    <div class="one-minute-cell"><dt>What this page covers</dt><dd>Every message type and every setting you can send when a call starts, in one reference table.</dd></div>
+    <div class="one-minute-cell"><dt>Why it matters</dt><dd>Two of these settings (the instructions and the tool list) can be changed mid-call. Everything else is fixed for the life of the connection, so it has to be right at the start.</dd></div>
+    <div class="one-minute-cell one-minute-number"><dt>The number to remember</dt><dd>One frame, called setup, must go first and alone. Everything else waits for the server's acknowledgment.</dd></div>
+    <div class="one-minute-cell"><dt>The decision you own</dt><dd>Which settings are standard across your product and which vary per call (voice, language, speech-detection sensitivity, compression).</dd></div>
+  </dl>
+</aside>
+
 This is the **reference page** for every WebSocket frame, `setup` field, and
 session option in one place. For the tutorial walkthrough, see
 [Getting started](/gemini-live/getting-started/); for the state machine

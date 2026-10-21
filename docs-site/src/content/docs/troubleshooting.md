@@ -3,6 +3,19 @@ title: Troubleshooting & Common Pitfalls
 description: Quick diagnosis and fixes for common audio, connection, VAD, tool calling, and billing issues in Gemini Live.
 ---
 
+<aside class="one-minute" aria-label="In one minute">
+  <div class="one-minute-head">
+    <span class="badge badge-blue">In one minute</span>
+    <span class="one-minute-audience">For product managers and solution architects</span>
+  </div>
+  <dl class="one-minute-grid">
+    <div class="one-minute-cell"><dt>What this page covers</dt><dd>A symptom-to-fix table for the problems that come up most: wrong-pitch audio, self-interruption, dropped connections, silent tool calls, and surprising bills.</dd></div>
+    <div class="one-minute-cell"><dt>Why it matters</dt><dd>Most incidents in the first weeks match one of these rows. Checking here first saves an investigation.</dd></div>
+    <div class="one-minute-cell one-minute-number"><dt>The number to remember</dt><dd>The model speaks at 24 kHz and listens at 16 kHz. A mismatch is the most common cause of a voice that sounds slow and deep, or fast and squeaky.</dd></div>
+    <div class="one-minute-cell"><dt>The decision you own</dt><dd>Which of these checks go into your launch runbook.</dd></div>
+  </dl>
+</aside>
+
 Use this symptom-to-fix reference to diagnose common issues during Gemini Live development and production rollout.
 
 ---

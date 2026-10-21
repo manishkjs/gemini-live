@@ -37,6 +37,12 @@ export default defineConfig({
       ],
       sidebar: [
         {
+          label: 'Start here',
+          items: [
+            { label: 'Executive overview', slug: 'executive-overview' },
+          ],
+        },
+        {
           label: 'Guides',
           items: [
             { label: 'Getting started', slug: 'getting-started' },
@@ -76,6 +82,7 @@ export default defineConfig({
               ],
             },
             { label: 'How to write a better prompt', slug: 'prompt-optimization' },
+            { label: 'Prompt engineering (deep dive)', slug: 'prompt-engineering' },
           ],
         },
         {

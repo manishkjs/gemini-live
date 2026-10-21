@@ -4,6 +4,14 @@ description: "Worklets, jitter buffers, backpressure, and client-side VAD: clien
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="How to capture, buffer, and play audio in the browser or app so the agent sounds clean and reacts quickly when the caller interrupts."
+  why="When an agent sounds choppy, talks over itself, or is slow to stop, the cause is almost always the client audio path, not the model."
+  number="A 150 to 200 ms playback buffer at 24 kHz. Smaller stutters; larger makes interruptions feel slow."
+  decide="Whether your client team owns this audio path or you adopt a framework that ships it."
+/>
 
 When a voice agent sounds choppy, talks over itself, or takes 400 ms to register a barge-in, the culprit is almost always the **client audio path** rather than the model.
 

@@ -4,6 +4,14 @@ description: Every option for handling fan noise, traffic, background voices, sp
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+import OneMinute from '../../../components/OneMinute.astro';
+
+<OneMinute
+  what="What to do about fan noise, traffic, other people talking, speakerphone echo, and coughs, layer by layer from the microphone to the prompt."
+  why="Noise is the top reason voice agents fail in real homes, cars, and call centers rather than in demos."
+  number="Four noise types, each with a different fix. Background voices need a voice-isolation filter; a noise suppressor alone will not remove them."
+  decide="Whether your callers' environments justify a commercial voice-isolation license (Krisp) or the open-source noise filter is enough."
+/>
 
 Native audio models hear the raw waveform. A ceiling fan, a television in the next room, or the agent's own voice leaking out of a mobile speakerphone all arrive on the same 16 kHz PCM stream as the caller. Because no single setting fixes all three, you need to match the defense to the kind of noise on the line.
 

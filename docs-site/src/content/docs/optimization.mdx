@@ -6,6 +6,14 @@ description: Four production patterns for Gemini Live voice sessions, each on it
 import { LinkCard, CardGrid } from '@astrojs/starlight/components';
 import OptimizationPillarTabs from '../../components/OptimizationPillarTabs.astro';
 import CallLifecycleTimeline from '../../components/CallLifecycleTimeline.astro';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="The four patterns that stop cost and latency from growing with call length, with one page each."
+  why="Together the first three turn a cost that compounds every turn into a flat per-minute rate; the fourth removes the cost of lines the agent says on every call."
+  number="62% cheaper on a 3-minute call, 82% cheaper on a 10-minute call, flat at about $0.031 per minute."
+  decide="Which of the four you ship at launch. Sliding window and prompt cards have the largest effect."
+/>
 
 <OptimizationPillarTabs active="overview" />
 

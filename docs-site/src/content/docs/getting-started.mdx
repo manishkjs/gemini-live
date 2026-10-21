@@ -5,6 +5,14 @@ description: "From zero to a working Gemini Live voice turn: endpoints, authenti
 
 import { Steps, Aside, Badge } from '@astrojs/starlight/components';
 import HandshakeSequence from '../../components/HandshakeSequence.astro';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="How to get a first spoken reply from Gemini Live: pick AI Studio or Vertex AI, authenticate, open the connection, and send audio."
+  why="Both surfaces run the same Live protocol on the same billing setup. They differ in how you authenticate, which compliance controls you get, and a few Vertex-only options."
+  number="About fifteen minutes from zero to a working spoken reply."
+  decide="AI Studio (API key, fastest start) or Vertex AI (enterprise access control, HIPAA and SOC 2, private networking, customer-managed encryption keys, regional data residency)."
+/>
 
 You can have a Gemini Live agent talking back to you in about fifteen minutes.
 

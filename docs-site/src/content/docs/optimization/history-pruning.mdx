@@ -5,6 +5,14 @@ description: Collapse spoken details into a sub-60-token structured FactStore so
 
 import OptimizationPillarTabs from '../../../components/OptimizationPillarTabs.astro';
 import LosslessPruningFlow from '../../../components/LosslessPruningFlow.astro';
+import OneMinute from '../../../components/OneMinute.astro';
+
+<OneMinute
+  what="Keep the facts the caller has told you (name, postal code, issue) in a tiny summary, so the server can drop old audio without the agent forgetting the caller."
+  why="Sliding-window compression on its own would lose details from the first minute of the call. This keeps them in under 60 text tokens instead of re-billing minutes of raw audio."
+  number="Under 60 tokens for the whole fact summary."
+  decide="Which caller facts must survive the full call, and where in your backend they live."
+/>
 
 <OptimizationPillarTabs active="pillar-3" />
 

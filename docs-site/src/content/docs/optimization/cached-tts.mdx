@@ -5,6 +5,14 @@ description: Pre-generate fixed greeting and hold clips with Gemini TTS or Chirp
 
 import OptimizationPillarTabs from '../../../components/OptimizationPillarTabs.astro';
 import CachedTtsFlow from '../../../components/CachedTtsFlow.astro';
+import OneMinute from '../../../components/OneMinute.astro';
+
+<OneMinute
+  what="Record the greeting, hold messages, and goodbye once with Gemini text-to-speech (TTS), then play the file instead of paying the model to say them on every call. Also a 200 ms safety buffer for compliance checks before audio reaches the phone line."
+  why="The caller hears the greeting instantly, and you stop paying output audio and carried history for lines that never change."
+  number="About $0.0078 saved per 10-turn call, or about $780 per 100,000 calls."
+  decide="Which lines in your script are fixed enough to pre-record, and whether you need the pre-speech compliance buffer."
+/>
 
 <OptimizationPillarTabs active="pillar-4" />
 

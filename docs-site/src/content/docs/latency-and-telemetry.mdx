@@ -4,6 +4,14 @@ description: Measuring true voice-to-voice turn latency, token telemetry, and Op
 ---
 
 import LatencyWaterfall from '../../components/LatencyWaterfall.astro';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="How to measure the delay a caller feels (last word spoken to first sound back) and the tokens (billing units) each turn consumes."
+  why="Standard web metrics are meaningless on a connection that stays open for 10 to 60 minutes. Without the right two numbers you cannot tell a model slowdown from a deliberate pause setting."
+  number="A good turn is under a second: 30 to 60 ms network, 300 to 500 ms end-of-speech wait, 220 to 350 ms for the model to start speaking."
+  decide="What latency target you promise, and which dashboard shows it per turn."
+/>
 
 In a real-time voice conversation, standard HTTP metrics like "total request duration" are meaningless because the WebSocket remains open for 10 to 60 minutes. Instead, voice engineering teams track **per-turn voice-to-voice latency** and **per-turn token consumption**.
 

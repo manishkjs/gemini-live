@@ -3,6 +3,19 @@ title: Interactive Voice Studio
 description: Audition Gemini Live HD voices, test VAD sensitivity, and inspect real-time token telemetry in the browser.
 ---
 
+<aside class="one-minute" aria-label="In one minute">
+  <div class="one-minute-head">
+    <span class="badge badge-blue">In one minute</span>
+    <span class="one-minute-audience">For product managers and solution architects</span>
+  </div>
+  <dl class="one-minute-grid">
+    <div class="one-minute-cell"><dt>What this page covers</dt><dd>A browser sandbox where you talk to a live agent, try the prebuilt voices, change the instructions, and watch latency and token counts per turn.</dd></div>
+    <div class="one-minute-cell"><dt>Why it matters</dt><dd>Voice choice and turn-taking settings are product decisions. Hearing them is faster than reading about them.</dd></div>
+    <div class="one-minute-cell one-minute-number"><dt>The number to remember</dt><dd>Five flagship HD voices (Puck, Charon, Kore, Fenrir, Aoede) plus 25 or more regional ones. Playback should stop within 100 ms when you interrupt.</dd></div>
+    <div class="one-minute-cell"><dt>The decision you own</dt><dd>Which voice and which end-of-speech sensitivity your product ships with.</dd></div>
+  </dl>
+</aside>
+
 The **Gemini Voice Studio** lets you audition prebuilt HD voices (`Puck`, `Charon`, `Kore`, `Fenrir`, `Aoede`, and 25+ regional voices), experiment with system instructions, and watch per-turn latency and token telemetry in real time.
 
 <div class="hero-card" style="display: flex; flex-direction: column; gap: 1rem; margin: 1.5rem 0;">

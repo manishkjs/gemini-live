@@ -7,6 +7,14 @@ import OptimizationPillarTabs from '../../../components/OptimizationPillarTabs.a
 import PromptCardFunnel from '../../../components/PromptCardFunnel.astro';
 import ReplaceVsStackFlow from '../../../components/ReplaceVsStackFlow.astro';
 import MidSpeechUpdateFlow from '../../../components/MidSpeechUpdateFlow.astro';
+import OneMinute from '../../../components/OneMinute.astro';
+
+<OneMinute
+  what="Give the model only the instructions and tools for the current step of the call. When the step changes, replace them in place rather than piling them up in history."
+  why="This is the difference between a prompt bill that stays flat and one that grows with every step, and it keeps the agent on script after long calls."
+  number="783 tokens per turn after three step changes when instructions are replaced in place, versus 2,493 when they are stacked in history."
+  decide="Whether your call flow is defined as steps (cards), each with its own short instructions and tool list."
+/>
 
 <OptimizationPillarTabs active="pillar-2" />
 

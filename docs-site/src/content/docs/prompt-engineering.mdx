@@ -4,6 +4,14 @@ description: How Gemini Live assembles the model prompt from top to bottom, wher
 ---
 
 import PromptAnatomyDiagram from '../../components/PromptAnatomyDiagram.astro';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="The detailed layout of the model prompt (eight ordered blocks), where to put standing rules versus changing state, and the phrasing traps that break a voice model."
+  why="Prompts that work for a text chatbot often fail out loud: brackets get read aloud, 'stay silent' causes dead air, and negative rules backfire."
+  number="Keep the standing instruction under 500 tokens."
+  decide="Which prompt rules are company-wide standards (persona, tone, language) and which are per-step."
+/>
 
 Writing prompts for a full-duplex native audio model is different from prompting a text chatbot. In Gemini Live, `systemInstruction`, `tools`, conversation history, and dynamic context updates are not independent settings: they occupy **fixed positions** inside the model prompt on every inference pass.
 

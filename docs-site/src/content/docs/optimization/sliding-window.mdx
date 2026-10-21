@@ -5,6 +5,14 @@ description: Break the 15-minute uncompressed audio ceiling and cap carried audi
 
 import OptimizationPillarTabs from '../../../components/OptimizationPillarTabs.astro';
 import ContextCompressionFlow from '../../../components/ContextCompressionFlow.astro';
+import OneMinute from '../../../components/OneMinute.astro';
+
+<OneMinute
+  what="A server-side setting that drops the oldest audio once the conversation passes a size limit (measured in tokens, the billing unit), while keeping your instructions intact."
+  why="Without it, long calls get slower and more expensive every turn and are cut off at 15 minutes."
+  number="Trigger at 5,000 tokens, trim back to 3,500. An unmanaged call accumulates about 1,840 carried tokens per minute."
+  decide="Whether any call in your product can run past a few minutes. If yes, this setting is not optional."
+/>
 
 <OptimizationPillarTabs active="pillar-1" />
 

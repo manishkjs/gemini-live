@@ -3,6 +3,19 @@ title: Tool Calling & Async Orchestration
 description: Asynchronous tool calling, non-blocking execution, and state orchestration in Gemini Live.
 ---
 
+<aside class="one-minute" aria-label="In one minute">
+  <div class="one-minute-head">
+    <span class="badge badge-blue">In one minute</span>
+    <span class="one-minute-audience">For product managers and solution architects</span>
+  </div>
+  <dl class="one-minute-grid">
+    <div class="one-minute-cell"><dt>What this page covers</dt><dd>How the agent asks your backend to do things (look up an order, book a seat) while the conversation keeps going. Also how to change its instructions and tools mid-call, and what to put in a tool result.</dd></div>
+    <div class="one-minute-cell"><dt>Why it matters</dt><dd>Tool calls are where voice agents freeze, go silent, or drift in accent. The result you return is the last thing the model reads before it speaks.</dd></div>
+    <div class="one-minute-cell one-minute-number"><dt>The number to remember</dt><dd>A one-line pointer instead of a repeated step card in each tool result saves about 550 to 680 history tokens (billing units) per step change.</dd></div>
+    <div class="one-minute-cell"><dt>The decision you own</dt><dd>Which tools are available at each step of the call, and what a tool result is allowed to say out loud.</dd></div>
+  </dl>
+</aside>
+
 In standard HTTP request-response models, the model stops generating when it calls a tool, waits for the API response, and then continues. 
 
 In **Gemini Live**, the session is a continuous, real-time audio stream. When the model decides to call a tool, **the audio stream does not pause**. The user can keep speaking while your backend executes the function.

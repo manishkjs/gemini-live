@@ -4,6 +4,14 @@ description: Complete breakdown of Gemini Live API token rates, per-minute audio
 ---
 
 import TurnSnowballDiagram from '../../components/TurnSnowballDiagram.astro';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="How Gemini Live bills (tokens, not minutes), what a minute of talking costs, and why an unmanaged multi-turn call gets more expensive every turn."
+  why="Finance will ask for a cost per minute. That figure depends on call length and turn rate unless you apply the optimizations."
+  number="About $0.023 per minute of continuous talking. Unmanaged, a 10-minute call reaches $0.178 per minute; optimized, it stays at $0.031."
+  decide="Which cost-per-minute figure goes into your business case, and which optimizations you commit to so it holds."
+/>
 
 Understanding how Gemini Live bills for streaming audio and multi-turn context is essential before deploying high-volume telephony or consumer voice workloads. Unlike per-minute STT/TTS rate cards, Gemini Live bills purely on **input and output tokens**.
 
