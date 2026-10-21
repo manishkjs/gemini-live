@@ -158,9 +158,9 @@ A call often moves through stages. First you verify the caller, then you fix the
 
 | What you want to change | How | Supported? |
 | :-- | :-- | :-- |
-| The instructions | Send `clientContent` with `role="system"` and `turn_complete=False` | Yes, documented |
-| The tool list | Open a new session with the new `setup.tools` | Yes, documented |
-| Both the tool list and `systemInstruction` in place, without reconnecting | Raw `context_update` frame on Vertex AI `gemini-3.8-live` | No (exposed on the wire, not yet documented or in the SDK) |
+| Both the tool list and `systemInstruction` in place, without reconnecting | `await session.send_context_update(system_instruction=..., tools=...)` (`google-genai >= 2.32.0`) | Yes on Vertex AI (`gemini-3.8-live`); SDK also sends the frame on the Gemini Developer API (confirm your API key has server-side `contextUpdate` access) |
+| The instructions only | `await session.send_context_update(system_instruction="...")` (`gemini-3.8-live`), or `clientContent` with `role="system"` and `turn_complete=False` (Vertex AI, including Gemini 2.5 native audio) | Yes, documented |
+| The tool list on models that do not support `contextUpdate` (such as Gemini 2.5 native audio) | Open a new session with the new `setup.tools` | Yes, documented |
 
 ### Change the instructions: send a system turn
 
@@ -188,25 +188,80 @@ The supported way to swap tools is a new session with a new `setup.tools`. Done 
 
 [Session Architecture: Managed Session Cycling](/gemini-live/gemini-live-skill/#b-the-managed-session-cycling-pattern) walks through each step.
 
-### Swap per-card tools and `systemInstruction` in place with `context_update` (Vertex AI `gemini-3.8-live`)
+### Swap per-card tools and `systemInstruction` in place with `send_context_update` (`google-genai >= 2.32.0`)
 
-The Vertex AI Live WebSocket accepts a `context_update` (`contextUpdate`) client message with two public fields: `tools` and `systemInstruction`. On `gemini-3.8-live`, sending it inside a blocking tool handler (right before returning the `FunctionResponse`) replaces the active tool list with only the tools the next prompt card needs and refreshes `systemInstruction` with the active card and session state, so sliding-window compression never drops the card.
+Starting in `google-genai 2.32.0` (`pip install -U "google-genai>=2.32.0"`), `session.send_context_update()` lets you replace `system_instruction`, `tools`, or both in place during a live call on `gemini-3.8-live` without closing the WebSocket:
 
-:::caution[`context_update` is exposed on the wire, but not yet documented or supported]
-- No public Google page describes `context_update` yet, and it comes with no compatibility promise or deprecation notice period.
-- Released versions of `google-genai` do not include a helper for it. You write raw JSON to the SDK session's underlying WebSocket (`session._ws.send(...)`).
-- It works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`). Google AI Studio ignores it, and `gemini-live-2.5-flash-native-audio` rejects it and closes the connection (`1007`). The server sends no confirmation frame when an update lands.
-- Removing a tool declaration does not remove earlier `function_call` turns from the conversation history, so the model can occasionally imitate an old call. Check incoming tool calls against the current card's active tool list before running them.
+```python
+# 1. Replace the system prompt only (existing tools stay untouched):
+await session.send_context_update(
+    system_instruction="Base rules...\n\nCURRENT PROMPT CARD\nStep: Payment..."
+)
+
+# 2. Replace the active tool list (pass Python functions or types.Tool objects):
+await session.send_context_update(tools=[set_call_language, dispatch_checkout_link])
+
+# 3. Remove all tools on a talk-only closing card (0 tool schema tokens/turn):
+await session.send_context_update(tools=[])
+
+# 4. Replace both in one atomic frame inside a blocking tool handler:
+await session.send_context_update(
+    system_instruction=updated_system_instruction,
+    tools=card_tools,
+)
+```
+
+Sending `send_context_update` inside a blocking tool handler (right before returning the `FunctionResponse`) replaces the active tool list with only the tools the next prompt card needs and refreshes `systemInstruction` with the active card and session state, so sliding-window compression never drops the card.
+
+:::caution[Operational rules for `send_context_update`]
+- **Update at major stage transitions, not on every turn**: `system_instruction` and `tools` sit in the model preamble, so every update invalidates the prefix cache. Swap them when the conversation moves to a new phase card (for example, `3 to 8 times` in a multi-step call), not on turns where nothing changed.
+- **Set at least one field**: Calling `await session.send_context_update()` with both `system_instruction=None` and `tools=None` raises `ValueError("At least one of `system_instruction` or `tools` must be set.")`.
+- **Full replacement (no merge)**: Every field you set replaces the previous value. Include global tools (such as `set_call_language`) in each card's `tools` list, and pass `base_rules + current_card + session_state` in `system_instruction`.
+- **Check active tools before running**: Removing a tool declaration does not remove earlier `function_call` turns from conversation history, so the model can occasionally imitate an old call. Check incoming tool calls against the current card's active tool list before running them.
+- **Model & SDK compatibility**: `session.send_context_update()` is in `google-genai >= 2.32.0` and serializes `contextUpdate` for both Vertex AI and the Gemini Developer API. On Vertex AI (`gemini-3.8-live`) it is ungated; on the Gemini Developer API, confirm your API key has server-side `contextUpdate` access before relying on it in production. Legacy `gemini-live-2.5-flash-native-audio` rejects `contextUpdate` with `1007` (use `send_client_content` with `role="system"` on Vertex AI 2.5 instead). If your non-Python SDK release has no context-update helper yet, send the raw `contextUpdate` JSON frame below.
 :::
 
-#### WebSocket wire payloads (`context_update`)
+#### Python tool-handler pattern (`google-genai >= 2.32.0`)
 
-Every field you include in `context_update` replaces (does not merge) the previous value. Because Protobuf cannot distinguish an unset repeated field from an empty list, `tools` wraps the `tools` array inside an outer object (`{"tools": {"tools": [...]}}`), and sending an empty wrapper object (`{"tools": {}}`) clears all tools:
+```python
+from typing import Any, Dict, List
+from google.genai import types
 
-```json
+
+async def advance_card_and_tools(
+    session,
+    function_call,
+    card_tools: List[Any],
+    updated_system_instruction: str,
+    tool_result: Dict[str, Any],
+):
+    # 1. Send context_update while the model is blocked waiting on this tool response.
+    #    Pass card_tools=[] on a talk-only closing card to clear all tools.
+    await session.send_context_update(
+        system_instruction=updated_system_instruction,
+        tools=card_tools,
+    )
+
+    # 2. Return the FunctionResponse (with a short pointer instead of repeating the full card).
+    await session.send_tool_response(
+        function_responses=[
+            types.FunctionResponse(
+                id=function_call.id,
+                name=function_call.name,
+                response=tool_result,
+            )
+        ]
+    )
+```
+
+#### Raw WebSocket JSON payloads (for non-Python runtimes or `google-genai < 2.32.0`)
+
+On the wire, `send_context_update` sends a `contextUpdate` (or `context_update`) message. Every field you include replaces the previous value. Because Protobuf cannot distinguish an unset repeated field from an empty list, `tools` wraps the `tools` array inside an outer object (`{"tools": {"tools": [...]}}`), and sending an empty list (`{"tools": {"tools": []}}`) or empty wrapper object (`{"tools": {}}`) clears all tools:
+
+```jsonc
 // 1. Replace both systemInstruction and the active tool list for the next card:
 {
-  "context_update": {
+  "contextUpdate": {
     "systemInstruction": {
       "parts": [{ "text": "Base rules...\n\nCURRENT PROMPT CARD\nStep: Payment..." }]
     },
@@ -241,72 +296,15 @@ Every field you include in `context_update` replaces (does not merge) the previo
 
 // 2. Clear all tools when entering a talk-only farewell card (0 tool schema tokens/turn):
 {
-  "context_update": {
-    "tools": {}
+  "contextUpdate": {
+    "tools": { "tools": [] }
   }
 }
 ```
 
-:::danger[An empty `"tools": {}` clears every tool]
-The `tools` wrapper exists so the server can tell "no tools update" apart from "clear all tools". If the `tools` key is absent, the current tools stay. If it is present, even as an empty object, the server replaces the tool list with what you sent, and `{}` means no tools. A serializer that always writes a default `"tools": {}` when you only meant to update `systemInstruction` removes every tool for the rest of the call, and the server sends no error. Omit the `tools` key unless you mean to change the tools.
+:::danger[An empty `"tools": {}` or `"tools": {"tools": []}` clears every tool]
+The `tools` wrapper exists so the server can tell "no tools update" apart from "clear all tools". If the `tools` key is absent (`tools=None` in `send_context_update`), the current tools stay. If it is present with an empty list (`tools=[]` in `send_context_update`, which sends `{"tools": {"tools": []}}` on the wire; `{"tools": {}}` is an equivalent raw form), the server clears all tools. A custom serializer that always writes a default `"tools": {}` when you only meant to update `systemInstruction` removes every tool for the rest of the call, and the server sends no error. Omit the `tools` key unless you mean to change the tools.
 :::
-
-#### Minimal Python helper (send inside a blocking tool call before returning the result)
-
-```python
-import json
-from typing import Any, Dict, List, Optional
-from google.genai import types
-
-
-def context_update_frame(
-    declarations: Optional[List[Dict[str, Any]]] = None,
-    system_instruction: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Build the raw context_update frame.
-
-    - declarations=[...] -> replaces active tools with the given declarations
-    - declarations=[]    -> sends {"tools": {}} to clear all active tools
-    - declarations=None  -> omits "tools" so existing tools stay unchanged
-    """
-    update: Dict[str, Any] = {}
-    if declarations is not None:
-        update["tools"] = (
-            {"tools": [{"functionDeclarations": declarations}]}
-            if declarations
-            else {}
-        )
-    if system_instruction is not None:
-        update["systemInstruction"] = {"parts": [{"text": system_instruction}]}
-    return {"context_update": update}
-
-
-async def advance_card_and_tools(
-    session,
-    function_call,
-    card_declarations: List[Dict[str, Any]],
-    updated_system_instruction: str,
-    tool_result: Dict[str, Any],
-):
-    # 1. Send context_update while the model is blocked waiting on this tool response.
-    #    The generation that reads the tool response will already have the new card's tools.
-    frame = context_update_frame(
-        declarations=card_declarations,
-        system_instruction=updated_system_instruction,
-    )
-    await session._ws.send(json.dumps(frame))
-
-    # 2. Return the FunctionResponse (with a short pointer instead of repeating the full card).
-    await session.send_tool_response(
-        function_responses=[
-            types.FunctionResponse(
-                id=function_call.id,
-                name=function_call.name,
-                response=tool_result,
-            )
-        ]
-    )
-```
 
 For the animated walkthrough of how Gemini Live stores instructions versus history, the 8-step flight-booking breakdown, and the complete tool-handler code, see [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini-live/optimization/prompt-cards/).
 

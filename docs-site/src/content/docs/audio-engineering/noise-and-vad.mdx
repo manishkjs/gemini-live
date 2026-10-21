@@ -12,7 +12,7 @@ Native audio models hear the raw waveform. A ceiling fan, a television in the ne
 | Noise type | Examples | What fixes it | What does NOT fix it |
 | :--- | :--- | :--- | :--- |
 | **Stationary background noise** | AC hum, fan, road rumble, keyboard clicks | Browser `noiseSuppression: true`, `RNNoiseFilter`, `SileroVADAnalyzer` (`min_volume=0.6`), `startOfSpeechSensitivity: LOW` | Prompt rules alone (the noise still triggers server VAD) |
-| **Background human voices (crosstalk)** | TV, side conversation, nearby call-center desk | Voice-isolation DSP (`KrispVivaFilter` `vi-tel-v2.7` / `pro-v1`), `turnCoverage: TURN_INCLUDES_ONLY_ACTIVITY`, prompt listening rule | Browser `noiseSuppression` or `RNNoise` (both treat all human voices as signal to keep) |
+| **Background human voices (crosstalk)** | TV, side conversation, nearby call-center desk | Voice-isolation DSP (`KrispVivaFilter` `vi-tel-v2.7` / `pro-v1`), prompt listening rule | Browser `noiseSuppression` or `RNNoise` (both treat all human voices as signal to keep) |
 | **Speakerphone echo** | Agent's own voice bleeding back into the mic | Browser/carrier `echoCancellation: true`, unmuting on `turnComplete` (not `generationComplete`), prompt echo guard | Raising VAD thresholds alone |
 | **Short coughs, breaths & backchannels** | Throat clear, `"haan"`, `"okay"`, `"right"` while the agent speaks | `RepeatOnFiller` recovery after `interrupted`, prompt continuation rule | Telling the model to `"stay silent and wait"` |
 
@@ -50,7 +50,7 @@ PSTN telephony trunks (Twilio, Plivo, SIP) and raw WebSocket clients do not run 
 
 | Filter | Removes background voices (crosstalk)? | License & install | Sample rate & latency notes |
 | :--- | :--- | :--- | :--- |
-| **`KrispVivaFilter`** (Krisp VIVA SDK) | **Yes** (`vi-tel-v2.7`, `tel-v2`, `pro-v1` isolate the primary speaker) | Commercial (`krisp_audio` wheel from `sdk.krisp.ai` + `KRISP_VIVA_API_KEY` + `.kef` model) | Accepts 8/16/24/32/44.1/48 kHz (resamples internally). Adds ~20 ms latency. Use `vi-tel-v2.7.kef` for 16 kHz telephony or `pro-v1.kef` for 16 to 32 kHz close mics. Note: `ss-v1.kef` removes noise only, without voice isolation |
+| **`KrispVivaFilter`** (Krisp VIVA SDK) | **Yes** (`vi-tel-v2.7`, `tel-v2`, `pro-v1` isolate the primary speaker) | Commercial (`krisp_audio` wheel from `sdk.krisp.ai` + `KRISP_VIVA_API_KEY` + `.kef` model) | Accepts 8/16/24/32/44.1/48 kHz natively (raises `ValueError` on other rates). Adds ~20 ms latency. Use `vi-tel-v2.7.kef` for 16 kHz telephony or `pro-v1.kef` for 16 to 32 kHz close mics. Note: `ss-v1.kef` removes noise only, without voice isolation |
 | **`RNNoiseFilter`** (`pyrnnoise`) | **No** (suppresses stationary noise only) | Open source, BSD (`pip install pipecat-ai[rnnoise]`) | Always runs at 48 kHz (480-sample frames); resamples `16 kHz <-> 48 kHz` via `SOXRStreamAudioResampler` |
 | **`KoalaFilter`** (Picovoice Koala) | **No** (stationary and non-stationary noise suppression) | Commercial (`pip install pipecat-ai[koala]` + Picovoice `access_key`) | Input transport sample rate must match `koala.sample_rate` |
 | **`AICFilter`** (ai-coustics AIC SDK) | **Yes** (speech enhancement and dereverberation) | Commercial (`aic_sdk` + model file or download ID) | Shares read-only models across calls via `AICModelManager` refcounting; pairs with `AICVADAnalyzer` |
@@ -104,8 +104,8 @@ Inside `setup.realtimeInputConfig`, two blocks control how Gemini Live reacts to
 - **`silenceDurationMs`**: Use `500` to `800` ms for general conversation, and raise to `1200` ms on dictation steps where callers pause to read out phone numbers, PNR codes, or addresses.
 
 ### 2. `turnCoverage`
-- **`TURN_INCLUDES_ALL_INPUT`**: Default for clean rooms. Sends all audio frames, including overlap while the agent was speaking, so the model hears the full barge-in sentence.
-- **`TURN_INCLUDES_ONLY_ACTIVITY`**: Best for high-noise rooms. Sends only segments flagged as active speech, keeping background chatter out of the model context and reducing carried audio tokens.
+- **`TURN_INCLUDES_ONLY_ACTIVITY` (Default)**: Sends only audio segments since the last turn that VAD flagged as active speech, stripping inactivity and silence between turns so quiet room tone does not accumulate carried audio tokens (setting `"turnCoverage": "TURN_INCLUDES_ONLY_ACTIVITY"` in `setup` explicitly pins this default). Note: background chatter loud enough to trip VAD still counts as activity, so pair this with `START_SENSITIVITY_LOW` or `KrispVivaFilter` when other people are talking nearby.
+- **`TURN_INCLUDES_ALL_INPUT`**: Sends all realtime input since the last turn, including silence and inactivity between utterances. Use only when you need continuous ambient audio in the turn context.
 
 ---
 

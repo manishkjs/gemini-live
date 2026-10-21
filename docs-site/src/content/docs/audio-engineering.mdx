@@ -125,8 +125,8 @@ Under `realtimeInputConfig`, `turnCoverage` controls which audio frames are incl
 
 | Setting | Behavior | Recommended use |
 | --- | --- | --- |
-| **`TURN_INCLUDES_ALL_INPUT`** | Includes all audio, including speech while the model was talking | **Default for duplex voice**: preserves full caller context during barge-in |
-| `TURN_INCLUDES_ONLY_ACTIVITY` | Includes only segments flagged as active speech | High-noise environments where ambient background speech would pollute context |
+| **`TURN_INCLUDES_ONLY_ACTIVITY` (Default)** | Includes only segments since the last turn flagged as active speech, excluding silence and inactivity | **Default for voice agents**: strips non-speech silence between turns so room tone does not inflate carried audio tokens |
+| `TURN_INCLUDES_ALL_INPUT` | Includes all realtime input since the last turn, including inactivity and silence | Only when the model needs continuous ambient audio between utterances |
 
 ## Production audio checklist
 

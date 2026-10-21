@@ -21,7 +21,7 @@ before the handshake completes; all other frames follow `setupComplete`.
 | `clientContent` | Explicit turn-based input or context injection; interrupts active output when `turnComplete: true` | Yes |
 | `realtimeInput` | Continuous audio, video, or activity signals | Yes (user turns) |
 | `toolResponse` | The result of a function the model requested via `toolCall` | Yes |
-| `context_update` | Mid-call replacement of `systemInstruction`, the declared `tools`, or both (Vertex AI `gemini-3.8-live` only; raw JSON, no SDK helper yet) | No. It overwrites the setup values in place |
+| `contextUpdate` | Mid-call replacement of `systemInstruction`, the declared `tools`, or both via `session.send_context_update()` (`google-genai >= 2.32.0`; also accepts `context_update` on the wire) | No. It overwrites the setup values in place and invalidates the prefix cache |
 
 ### Server -> client
 
@@ -46,12 +46,12 @@ Sent once at session start. Most fields last for the life of the socket. Two can
 | Field | Sets | Notes |
 | --- | --- | --- |
 | `model` | The Live model identifier | Vertex requires `projects/.../locations/.../publishers/google/models/...` |
-| `systemInstruction` | The agent's persona and base rules | Replaceable mid-call: `clientContent` with `role="system"` on any Vertex AI Live model, or `context_update.systemInstruction` on Vertex AI `gemini-3.8-live`. Each update replaces the whole instruction. See [Pillar 2: Dynamic prompt cards](/gemini-live/optimization/prompt-cards/) |
+| `systemInstruction` | The agent's persona and base rules | Replaceable mid-call: `session.send_context_update(system_instruction="...")` (`google-genai >= 2.32.0`) or `clientContent` with `role="system"` (Vertex AI). Each update replaces the whole instruction and rebuilds the prefix cache, so update at stage transitions rather than on every turn. See [Pillar 2: Dynamic prompt cards](/gemini-live/optimization/prompt-cards/) |
 | `generationConfig.responseModalities` | `["AUDIO"]` **or** `["TEXT"]` | Never pass both (`["AUDIO","TEXT"]` closes with code `1007`) |
 | `generationConfig.speechConfig` | Prebuilt voice + BCP-47 language | Voice names are **case-sensitive** (`Aoede`, not `aoede`) |
 | `generationConfig.temperature` | Sampling temperature | Keep `0.7` to `0.8` for audio output. Leave `topK` and `topP` unset. See [Sampling](#sampling-for-audio-output) |
 | `generationConfig.thinkingConfig` | Reasoning level | Depends on the model. See [Thinking config by model](#thinking-config-by-model) |
-| `tools` | Function declarations | Set `behavior: "NON_BLOCKING"` for async tools. Replaceable mid-call with `context_update.tools` on Vertex AI `gemini-3.8-live`. See [Tools & function calling](/gemini-live/tools/) |
+| `tools` | Function declarations | Set `behavior: "NON_BLOCKING"` for async tools. Replaceable mid-call with `session.send_context_update(tools=[...])` (or `tools=[]` to clear all tools) in `google-genai >= 2.32.0`. See [Tools & function calling](/gemini-live/tools/) |
 | `realtimeInputConfig.automaticActivityDetection` | Server VAD thresholds | Sensitivity, `silenceDurationMs`, `prefixPaddingMs` |
 | `outputAudioTranscription` | Text transcript of model speech | `{}` to enable. On Vertex AI, add `languageCodes` (see [Response modalities and transcription](#response-modalities-and-transcription)) |
 | `inputAudioTranscription` | Text transcript of user speech | `{}` to enable. On Vertex AI, add `languageCodes` |
