@@ -1,21 +1,41 @@
-# Gemini Live for Developers
+# Gemini Live — Developer Docs (Starlight)
 
-Production architecture, audio engineering, tokenomics, 4-pillar optimization patterns, and drop-in coding agent skill (`SKILL.md`) for building real-time duplex voice agents on the **Gemini Live API** (`BidiGenerateContent`).
+Customer-facing documentation for building real-time voice agents on the Gemini
+Live API. Built with [Astro](https://astro.build) + [Starlight](https://starlight.astro.build).
 
-- **Live Documentation Site:** [https://manishkjs.github.io/gemini-live/](https://manishkjs.github.io/gemini-live/)
-- **Drop-In Agent Skill (`SKILL.md`):** [https://manishkjs.github.io/gemini-live/SKILL.md](https://manishkjs.github.io/gemini-live/SKILL.md)
+> **Isolation:** This site is intentionally decoupled from the application.
+> It has its own `package.json`, imports nothing from `server/` or `client/`,
+> is excluded from the Docker image and Cloud Build context (`.gcloudignore`,
+> `.dockerignore`), and deploys **only** to GitHub Pages via
+> `.github/workflows/docs.yml`. It never ships in your Cloud Run deploy.
 
-```bash
-mkdir -p .agents/skills/gemini-live
-curl -fsSL https://manishkjs.github.io/gemini-live/SKILL.md \
-  -o .agents/skills/gemini-live/SKILL.md
-```
-
-## Local Docs Development
+## Local development
 
 ```bash
 cd docs-site
 npm ci
 npm run dev      # http://localhost:4321/gemini-live
-npm run build    # outputs static site to docs-site/dist/
+npm run build    # outputs to docs-site/dist
+npm run preview  # serve the production build locally
 ```
+
+## Deployment (GitHub Pages)
+
+Pushing to `ui-changes-sep` or `main` with changes under `docs-site/**` triggers
+the Pages workflow. **One-time setup:** in the GitHub repo, go to
+**Settings -> Pages -> Build and deployment -> Source** and select
+**GitHub Actions**.
+
+Published at: `https://manishkjs.github.io/gemini-live/`
+
+## Using a custom domain later
+
+1. In `astro.config.mjs`, set `site` to your domain and `base` to `'/'`.
+2. Add `docs-site/public/CNAME` containing the domain.
+3. Update internal links from `/gemini-live/...` to `/...`.
+
+## Content
+
+Pages live in `src/content/docs/`. Navigation is defined in `astro.config.mjs`.
+Content is written for **external customers** — it deliberately omits any
+Google-internal references.
