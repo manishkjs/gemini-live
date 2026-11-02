@@ -29,8 +29,8 @@ Standard Cloud Run defaults (like CPU throttling between requests and 300-second
 | **CPU Allocation** | CPU only allocated during request processing | **`--no-cpu-throttling` (CPU always allocated)** | Ensures background asyncio tasks, tool callbacks, and heartbeats never freeze between audio frames. |
 | **Request Timeout** | `300s` (5 minutes) | **`--timeout=3600`** (60 minutes) | Prevents Cloud Run's front-end load balancer from severing active calls at the 5-minute mark. |
 | **Session Affinity** | Disabled | **`--session-affinity`** | Routes reconnect attempts (`sessionResumption`) back to the same container instance holding in-memory call state. |
-| **Concurrency** | `80` requests/instance | **`--concurrency=15` to `25`** (for DSP/Pipecat) | Real-time audio resampling and VAD per call consume continuous CPU/RAM; capping concurrency prevents audio jitter under load. |
-| **Min Instances** | `0` (scale to zero) | **`--min-instances=1`** (or higher) | Eliminates 2–4 second cold-start delays when an inbound phone call rings. |
+| **Concurrency** | `80` requests/instance | **`--concurrency=15` to `25`** (with local audio DSP) | Real-time audio resampling and VAD per call consume continuous CPU/RAM; capping concurrency prevents audio jitter under load. |
+| **Min Instances** | `0` (scale to zero) | **`--min-instances=1`** (or higher) | Eliminates 2 to 4 second cold-start delays when an inbound phone call rings. |
 
 ### Reference `gcloud run deploy` command
 
@@ -38,6 +38,7 @@ Standard Cloud Run defaults (like CPU throttling between requests and 300-second
 gcloud run deploy gemini-live-voice-gateway \
   --source . \
   --region us-central1 \
+  --no-allow-unauthenticated \
   --no-cpu-throttling \
   --timeout 3600 \
   --session-affinity \
@@ -48,6 +49,8 @@ gcloud run deploy gemini-live-voice-gateway \
   --max-instances 50 \
   --set-env-vars="GOOGLE_CLOUD_PROJECT=your-project-id,GOOGLE_CLOUD_LOCATION=us-central1,GOOGLE_GENAI_USE_VERTEXAI=TRUE"
 ```
+
+Authenticate browser or mobile callers at your API gateway or issue short-lived ephemeral tokens (`client.auth_tokens.create` on `v1alpha` for direct client-to-Live sessions) rather than exposing an unauthenticated backend proxy to the public internet.
 
 ---
 

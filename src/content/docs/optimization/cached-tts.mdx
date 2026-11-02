@@ -88,32 +88,53 @@ async def play_cached_greeting(session, play_chunk, greeting_pcm: bytes,
         await play_chunk(greeting_pcm[start:start + CHUNK_BYTES])
 ```
 
-## Code pattern B: Cache TTS in a Pipecat cascade
+## Code pattern B: Cache repeated TTS clips in Redis (raw PCM)
 
-The community package [`pipecat-tts-cache`](https://github.com/omChauhanDev/pipecat-tts-cache) wraps any Pipecat TTS service. It builds the cache key for you and skips saving audio when an `InterruptionFrame` arrives. Check its README for the Pipecat versions it supports before you upgrade Pipecat.
+Wrap `gemini-3.8-flash-tts` (or Cloud Text-to-Speech Chirp 3 HD) in a lightweight Redis helper that stores raw `24 kHz` `s16le` PCM bytes directly (without `pickle`) under a deterministic SHA-256 key, and skip caching any utterance interrupted mid-synthesis:
 
 ```python
-# pip install "pipecat-tts-cache[redis]"
-from pipecat.services.google.tts import GoogleHttpTTSService
-from pipecat_tts_cache import TTSCacheMixin
-from pipecat_tts_cache.backends import RedisCacheBackend
+import hashlib
+import redis.asyncio as redis
+from google import genai
+from google.genai import types
+
+TTS_MODEL = "gemini-3.8-flash-tts"
 
 
-class CachedGoogleTTS(TTSCacheMixin, GoogleHttpTTSService):
-    pass
+async def synthesize_or_get_cached_pcm(
+    client: genai.Client,
+    rds: redis.Redis,
+    text: str,
+    voice_name: str = "Kore",
+    language_code: str = "en-US",
+    ttl_seconds: int = 604_800,
+) -> bytes:
+    norm = " ".join(text.strip().split())
+    digest = hashlib.sha256(f"{TTS_MODEL}:{voice_name}:{language_code}:{norm}".encode()).hexdigest()
+    cache_key = f"tts:pcm24k:{digest}"
 
+    cached = await rds.get(cache_key)
+    if cached:
+        return cached
 
-tts = CachedGoogleTTS(
-    settings=CachedGoogleTTS.Settings(voice="en-US-Chirp3-HD-Aoede"),
-    cache_backend=RedisCacheBackend(
-        redis_url="redis://localhost:6379/0",
-        key_prefix="pipecat:tts:",
-    ),
-    cache_ttl=604800,  # keep clips for one week
-)
+    resp = await client.aio.models.generate_content(
+        model=TTS_MODEL,
+        contents=[types.Content(role="user", parts=[types.Part.from_text(text=norm)])],
+        config=types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                language_code=language_code,
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
+                ),
+            ),
+        ),
+    )
+    pcm = resp.candidates[0].content.parts[0].inline_data.data
+    even_pcm = pcm[: len(pcm) & ~1]  # enforce 2-byte s16le sample alignment
+    await rds.set(cache_key, even_pcm, ex=ttl_seconds)
+    return even_pcm
 ```
-
-The Redis backend stores audio with Python `pickle`, so point it at a private Redis instance that only your bot can write to.
 
 ---
 
@@ -124,7 +145,7 @@ The Redis backend stores audio with Python `pickle`, so point it at a private Re
 In strictly regulated industries (banking collections, healthcare triage, insurance underwriting), compliance teams sometimes ask: *"How do we guarantee the native audio model never speaks a prohibited phrase or leaks PII?"*
 
 Because Gemini Live emits `outputTranscription` chunks concurrently with `inlineData` audio frames:
-1. Hold outbound 24kHz PCM audio frames in a 150ms to 200ms ring buffer in your media gateway (Pipecat `FrameProcessor` or custom WebSocket proxy).
+1. Hold outbound 24kHz PCM audio frames in a 150ms to 200ms ring buffer in your media gateway or WebSocket proxy.
 2. Run a fast deterministic regex / Aho-Corasick guardrail check against the streaming `outputTranscription` text.
 3. If a prohibited pattern is detected, flush the 200ms ring buffer before the audio reaches the telephony socket and trigger a corrective prompt or human transfer.
 

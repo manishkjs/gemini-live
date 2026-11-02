@@ -1,96 +1,96 @@
 ---
 /**
  * PromptAnatomyDiagram.astro
- * Animated visualization of the top-to-bottom positional anatomy of a Gemini Live model prompt:
- *   1. Preamble Zone (ROLE_SYSTEM + ROLE_DEVELOPER: tools -> system_instruction) [Prefix-Cached]
- *   2. History Zone (ROLE_USER / ROLE_ASSISTANT + server ROLE_CONTEXT time/location) [Sliding Window]
- *   3. Active Turn Zone (ROLE_USER current turn + tool results, then the server footer) [Highest Recency Weight]
+ * Animated visualization of the top-to-bottom observable context layout of a Gemini Live turn:
+ *   1. Session Setup (speechConfig voice + setup.tools + setup.systemInstruction) [Preserved Across SlidingWindow]
+ *   2. Rolling History (prior caller & model turns, truncated at barge-in) [Sliding Window]
+ *   3. Current Turn & Tool Results (latest caller utterance + FunctionResponse right before audio generation)
  */
 interface Props {
   caption?: string;
 }
 const {
-  caption = "Positional anatomy of a Gemini Live inference pass: static tools and system instructions sit in the prefix-cached preamble at the top, while mutable session state sits at the very bottom after the current caller turn where it steers the response strongest without invalidating the prefix cache.",
+  caption = "Observable context layout of a Gemini Live turn: session setup (voice config, active tools, and systemInstruction) stays preserved across SlidingWindow compaction, while the latest caller utterance and compact FunctionResponse land right before audio generation.",
 } = Astro.props;
 ---
 
 <figure class="pad-wrapper">
   <svg viewBox="0 0 860 470" role="img" aria-labelledby="pad-title pad-desc" class="pad-svg">
-    <title id="pad-title">Gemini Live Model Prompt Positional Anatomy</title>
+    <title id="pad-title">Gemini Live Context Layout Across a Turn</title>
     <desc id="pad-desc">
-      Top-to-bottom stack of the positional slots in a Gemini Live prompt: ROLE_SYSTEM preamble, ROLE_DEVELOPER containing function declarations followed by system_instruction (base rules, current card and session state) inside the prefix-cached boundary, ROLE_USER and ROLE_ASSISTANT conversation history, server-injected ROLE_CONTEXT time and location, the current turn with any tool results, and a short server footer at the very bottom.
+      Top-to-bottom stack of a Gemini Live turn context: session setup containing speechConfig, active function declarations (setup.tools), and systemInstruction (base rules, current card, and session state) preserved above the SlidingWindow eviction boundary; rolling conversation history managed by SlidingWindow; and the active caller turn followed by any FunctionResponse right before audio generation.
     </desc>
 
     <!-- Outer Card -->
     <rect x="10" y="10" width="840" height="450" rx="14" class="card-bg" />
 
     <!-- Header -->
-    <text x="34" y="42" class="header-title">How Gemini Live Constructs the Model Prompt (Top to Bottom)</text>
+    <text x="34" y="42" class="header-title">How Gemini Live Orders Session Context (Top to Bottom)</text>
     <text x="34" y="62" class="header-sub">
-      Why prompt position determines both attention strength and prefix-cache performance across turns.
+      Why context position governs both recency steering and SlidingWindow retention across turns.
     </text>
 
-    <!-- ================= LEFT COLUMN: THE 6 POSITIONAL PROMPT SLOTS ================= -->
+    <!-- ================= LEFT COLUMN: THE 6 OBSERVABLE CONTEXT SLOTS ================= -->
 
-    <!-- Bracket 1: Prefix-Cached Preamble -->
+    <!-- Bracket 1: Session Setup -->
     <rect x="30" y="80" width="490" height="134" rx="10" class="zone-preamble" />
-    <text x="46" y="100" class="zone-tag blue-tag">1. PREAMBLE ZONE (PREFIX-CACHED)</text>
+    <text x="46" y="100" class="zone-tag blue-tag">1. SESSION SETUP (PRESERVED ACROSS COMPACTION)</text>
 
-    <!-- Slot 1: ROLE_SYSTEM -->
+    <!-- Slot 1: Voice Config -->
     <rect x="46" y="108" width="458" height="36" rx="6" class="slot-box slot-muted" />
-    <text x="58" y="130" class="slot-role muted-role">ROLE_SYSTEM</text>
-    <text x="200" y="130" class="slot-val">&lt;model preamble &amp; voice config&gt; (server-internal)</text>
+    <text x="58" y="130" class="slot-role muted-role">VOICE CONFIG</text>
+    <text x="200" y="130" class="slot-val">speechConfig (voiceName + languageCode or replicated clip)</text>
 
-    <!-- Slot 2: ROLE_DEVELOPER -->
+    <!-- Slot 2: Tools & System Instruction -->
     <rect x="46" y="150" width="458" height="54" rx="6" class="slot-box slot-blue" />
-    <text x="58" y="172" class="slot-role blue-role">ROLE_DEVELOPER</text>
-    <text x="200" y="170" class="slot-val-bold">1. &lt;function declarations&gt; (setup.tools)</text>
-    <text x="200" y="190" class="slot-val-bold">2. &lt;developer instruction&gt; (setup.systemInstruction)</text>
+    <text x="58" y="172" class="slot-role blue-role">SETUP / UPDATE</text>
+    <text x="200" y="170" class="slot-val-bold">- setup.tools (active functionDeclarations)</text>
+    <text x="200" y="190" class="slot-val-bold">- setup.systemInstruction (base + card + state)</text>
 
-    <!-- Cache Boundary Line -->
+    <!-- SlidingWindow Eviction Boundary Line -->
     <line x1="30" y1="224" x2="520" y2="224" class="cache-line" />
-    <rect x="180" y="215" width="190" height="18" rx="4" class="cache-pill" />
-    <text x="275" y="227" class="cache-pill-txt" text-anchor="middle">PREFIX CACHE BOUNDARY</text>
+    <rect x="145" y="215" width="260" height="18" rx="4" class="cache-pill" />
+    <text x="275" y="227" class="cache-pill-txt" text-anchor="middle">SLIDING WINDOW EVICTION BOUNDARY</text>
 
     <!-- Bracket 2: Rolling Conversation History -->
     <rect x="30" y="240" width="490" height="96" rx="10" class="zone-history" />
     <text x="46" y="260" class="zone-tag amber-tag">2. ROLLING HISTORY ZONE (SLIDING WINDOW 5K / 3.5K)</text>
 
-    <!-- Slot 3: ROLE_USER / ROLE_ASSISTANT -->
+    <!-- Slot 3: Prior Turns -->
     <rect x="46" y="268" width="458" height="30" rx="6" class="slot-box slot-amber" />
-    <text x="58" y="287" class="slot-role amber-role">USER / ASSISTANT</text>
-    <text x="200" y="287" class="slot-val">&lt;prior turns: carried audio + text transcripts&gt;</text>
+    <text x="58" y="287" class="slot-role amber-role">PRIOR TURNS</text>
+    <text x="200" y="287" class="slot-val">carried caller &amp; model audio + transcripts</text>
 
-    <!-- Slot 4: Server ROLE_CONTEXT -->
+    <!-- Slot 4: Barge-in & Turn Metadata -->
     <rect x="46" y="302" width="458" height="26" rx="6" class="slot-box slot-muted" />
-    <text x="58" y="319" class="slot-role muted-role">ROLE_CONTEXT</text>
-    <text x="200" y="319" class="slot-val">&lt;time and location&gt; (server-injected)</text>
+    <text x="58" y="319" class="slot-role muted-role">BARGE-IN TRIM</text>
+    <text x="200" y="319" class="slot-val">interrupted model audio trimmed to heard speech</text>
 
     <!-- Bracket 3: Active Turn & Recency Tail -->
     <rect x="30" y="346" width="490" height="98" rx="10" class="zone-tail" />
-    <text x="46" y="366" class="zone-tag green-tag">3. ACTIVE TURN (STRONGEST STEERING)</text>
+    <text x="46" y="366" class="zone-tag green-tag">3. CURRENT TURN &amp; TOOL RESPONSE (STRONGEST STEERING)</text>
 
     <!-- Slot 5: Current User Turn -->
     <rect x="46" y="374" width="458" height="28" rx="6" class="slot-box slot-amber" />
-    <text x="58" y="392" class="slot-role amber-role">ROLE_USER</text>
-    <text x="200" y="392" class="slot-val">&lt;current caller turn + tool calls and results&gt;</text>
+    <text x="58" y="392" class="slot-role amber-role">CALLER INPUT</text>
+    <text x="200" y="392" class="slot-val">latest realtimeInput audio + input transcript</text>
 
-    <!-- Slot 6: Client Context / Tail State -->
+    <!-- Slot 6: Tool Response -->
     <rect x="46" y="406" width="458" height="30" rx="6" class="slot-box slot-green pulse-tail" />
-    <text x="58" y="425" class="slot-role green-role">ROLE_CONTEXT</text>
-    <text x="200" y="425" class="slot-val-green">&lt;server footer&gt; (not client-writable)</text>
+    <text x="58" y="425" class="slot-role green-role">TOOL RESULT</text>
+    <text x="200" y="425" class="slot-val-green">FunctionResponse (*_say + call_state + vocal_tone)</text>
 
     <!-- ================= RIGHT COLUMN: ARCHITECTURAL CONSEQUENCES ================= -->
 
-    <!-- Callout 1: Keep Preamble Static -->
+    <!-- Callout 1: Keep Setup Lean -->
     <g class="callout-card">
       <rect x="544" y="80" width="286" height="134" rx="10" class="callout-blue" />
-      <text x="560" y="104" class="callout-title blue-role">Swap the Preamble Per Card</text>
-      <text x="560" y="124" class="callout-body">Tools and systemInstruction sit at</text>
-      <text x="560" y="141" class="callout-body">the very start of the prompt.</text>
+      <text x="560" y="104" class="callout-title blue-role">Swap Setup Per Card</text>
+      <text x="560" y="124" class="callout-body">Tools and systemInstruction stay</text>
+      <text x="560" y="141" class="callout-body">preserved across SlidingWindow.</text>
       <text x="560" y="161" class="callout-body">Hold base rules + current card +</text>
-      <text x="560" y="178" class="callout-body">session state. Each swap rebuilds</text>
-      <text x="560" y="195" class="callout-highlight-blue">the cache once: swap per card only.</text>
+      <text x="560" y="178" class="callout-body">session state. Re-billed every turn:</text>
+      <text x="560" y="195" class="callout-highlight-blue">keep compact &amp; swap per card only.</text>
     </g>
 
     <!-- Callout 2: Middle Dilution Warning -->

@@ -53,33 +53,62 @@ from google.genai import types
 config = types.LiveConnectConfig(
     response_modalities=[types.Modality.AUDIO],
     speech_config=types.SpeechConfig(
+        language_code="en-US",
         voice_config=types.VoiceConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(
                 voice_name="Aoede"
             )
-        )
+        ),
     ),
 )
 ```
 
 ---
 
-## 2. Running a local reference Voice Studio
+## 2. Audition voices locally in ~35 lines of Python
 
-To run the reference Gemini Live Voice Studio locally with live token accounting and tool-call inspection:
+To audition any prebuilt voice and inspect per-turn `usage_metadata` from your terminal without setting up a browser app, run a one-turn `gemini-3.8-live` session that saves a 24 kHz `.wav` clip (`pip install -U "google-genai>=2.32.0"`):
 
-```bash
-git clone https://github.com/manishkjs/gemini-live.git
-cd gemini-live
+```python
+import asyncio
+import wave
+from google import genai
+from google.genai import types
 
-# Configure your project or API key
-export GOOGLE_CLOUD_PROJECT="your-project-id"
-export GOOGLE_CLOUD_LOCATION="us-central1"
-export GOOGLE_GENAI_USE_VERTEXAI="TRUE"
+MODEL = "gemini-3.8-live"
 
-# Start the backend and web UI
-uv run python server.py
+async def audition_voice(voice_name: str = "Kore", language_code: str = "en-US"):
+    client = genai.Client()  # reads GEMINI_API_KEY, or GOOGLE_GENAI_USE_VERTEXAI=TRUE
+    config = types.LiveConnectConfig(
+        response_modalities=[types.Modality.AUDIO],
+        speech_config=types.SpeechConfig(
+            language_code=language_code,
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
+            ),
+        ),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+    )
+    pcm = bytearray()
+    async with client.aio.live.connect(model=MODEL, config=config) as session:
+        await session.send_client_content(
+            turns=types.Content(role="user", parts=[types.Part(text="Greet me in two short sentences.")]),
+            turn_complete=True,
+        )
+        async for msg in session.receive():
+            if msg.data:
+                pcm.extend(msg.data)
+            if msg.server_content and msg.server_content.turn_complete:
+                if msg.usage_metadata:
+                    print("Tokens:", msg.usage_metadata.total_token_count)
+                break
+    with wave.open(f"audition_{voice_name}.wav", "wb") as wf:
+        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(24000); wf.writeframes(pcm)
+
+asyncio.run(audition_voice("Kore", "en-IN"))
 ```
+
+For interactive microphone testing in the browser, open [Google AI Studio Live](https://aistudio.google.com/live) or pair the [Getting started](/gemini-live/getting-started/) script with a local audio I/O loop.
 
 ### What to test in your first 2 minutes
 1. **Barge-in latency**: Interrupt the model mid-sentence with *"Hold on, change the date to Friday"* and verify that playback stops within `<100ms`.

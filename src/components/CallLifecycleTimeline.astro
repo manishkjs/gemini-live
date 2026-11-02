@@ -1,13 +1,13 @@
 ---
 /**
  * CallLifecycleTimeline.astro
- * Visualizes when each of the 3 Optimization Pillars activates across a live telephony call timeline.
+ * Visualizes when each Optimization Pillar activates across a live telephony call timeline.
  */
 interface Props {
   caption?: string;
 }
 const {
-  caption = "How the three pillars work together across a single call: Pillar 2 protects the 0 to 5s bounce zone, Pillar 3 cuts turn-by-turn memory cost by converting audio to text, and Pillar 1 caps long-call compounding at 5,000 tokens.",
+  caption = "How the four pillars work across a call: Cached TTS (Pillar 4) serves the fixed Turn-0 greeting at zero token cost, JIT Prompt Cards (Pillar 2) protect the 0 to 5s bounce zone, FactStore Pruning (Pillar 3) keeps confirmed facts in compact text, and SlidingWindow (Pillar 1) caps long-call compounding at 5,000 tokens.",
 } = Astro.props;
 ---
 
@@ -63,7 +63,7 @@ const {
       <text x="320" y="168" class="stage-heading">2. Audio to Text Pruning</text>
       <text x="320" y="187" class="stage-body">Keep active prompt at ~500 tok/turn.</text>
       <text x="320" y="204" class="stage-body">Convert older carried audio ($3/M)</text>
-      <text x="320" y="221" class="stage-body">into text ($0.50-$0.75/M) + pin to</text>
+      <text x="320" y="221" class="stage-body">into text ($0.75/M on 3.8) + pin to</text>
       <text x="320" y="238" class="stage-highlight-blue">&lt;60 tok FactStore (-75%+ memory tax).</text>
     </g>
 

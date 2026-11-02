@@ -28,20 +28,24 @@ Google AI Studio and Vertex AI run on the same underlying Gemini Live models and
 | --- | --- | --- |
 | **When to choose** | Fast setup with API keys and tiered Cloud Billing rate limits | Workloads requiring HIPAA, SOC 2, VPC-SC, CMEK, or regional data residency |
 | **Host** | `generativelanguage.googleapis.com` | `us-central1-aiplatform.googleapis.com` |
-| **API version** | `v1alpha` / `v1beta` | `v1beta1` |
+| **API version** | `v1beta` (or `v1alpha` for ephemeral tokens) | `v1beta1` or `v1` (`v1beta1` for `proactivity` / affective dialog) |
 | **WebSocket path** | `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` |
-| **Auth** | API key (`?key=$GEMINI_API_KEY`) | OAuth bearer token (ADC / service account) |
-| **Model form** | `models/<model>` | `projects/<ID>/locations/us-central1/publishers/google/models/<model>` |
+| **Auth** | Server: API key (`?key=$GEMINI_API_KEY`); Browser/Mobile: short-lived ephemeral token (`client.auth_tokens.create`) | OAuth bearer token (ADC / service account) |
+| **Model form** | `models/gemini-3.8-live` (or `models/gemini-3.8-live-extended-thinking`) | `projects/<ID>/locations/us-central1/publishers/google/models/gemini-3.8-live` |
 
 ## 2. Authenticate
 
-### Path A: Google AI Studio (API key)
+### Path A: Google AI Studio (API key or ephemeral client token)
 
 Create an API key in [Google AI Studio](https://aistudio.google.com/apikey) linked to a Cloud Billing project:
 
 ```bash
 export GEMINI_API_KEY="your-gemini-api-key"
 ```
+
+<Aside type="caution" title="Never expose raw API keys in browsers or mobile apps">
+Keep `GEMINI_API_KEY` on your server. If a browser or mobile app connects directly to the Gemini Developer API without a backend media proxy, mint a single-use short-lived **ephemeral token** on your server (`client.auth_tokens.create(...)` with `http_options={'api_version': 'v1alpha'}` and `live_connect_constraints`) and pass only `token.name` to the client. See [Agent Skill §15](/gemini-live/gemini-live-skill/#15-client-side-security--ephemeral-authentication-tokens).
+</Aside>
 
 ### Path B: Vertex AI (IAM / Application Default Credentials)
 
@@ -85,7 +89,7 @@ export GEMINI_API_KEY="your-gemini-api-key"
 This script opens a Live session, sends a text prompt, and writes the model's spoken reply to `reply.wav`:
 
 ```bash
-pip install "google-genai>=1.0.0"
+pip install -U "google-genai>=2.32.0"
 ```
 
 ```python title="first_turn.py"
@@ -93,7 +97,9 @@ import asyncio, os, wave
 from google import genai
 from google.genai import types
 
-MODEL = "gemini-3.1-flash-live-preview"
+# Default GA low-latency voice model (use "gemini-3.8-live-extended-thinking" for background reasoning).
+# Migrating from gemini-3.1-flash-live-preview (shuts down Nov 17, 2026)? Swap the model ID and omit thinking_config.
+MODEL = "gemini-3.8-live"
 
 # Option A: Vertex AI (ADC / Service Account)
 client = genai.Client(
@@ -110,14 +116,12 @@ config = types.LiveConnectConfig(
     response_modalities=["AUDIO"],
     system_instruction="You are a warm, concise voice assistant. Keep replies short.",
     speech_config=types.SpeechConfig(
+        language_code="en-US",  # Set explicitly (e.g., "en-IN" or "hi-IN" for Indian voices)
         voice_config=types.VoiceConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede")
-        )
+        ),
     ),
-    thinking_config=types.ThinkingConfig(
-        thinking_level="minimal",
-        include_thoughts=False,
-    ),
+    # Omit thinking_config on gemini-3.8-live (operates at minimal thinking automatically).
     # Enable output transcription to receive text alongside audio.
     output_audio_transcription=types.AudioTranscriptionConfig(),
 )
@@ -173,17 +177,14 @@ A production `setup` frame:
 ```json
 {
   "setup": {
-    "model": "projects/PROJECT_ID/locations/us-central1/publishers/google/models/gemini-3.1-flash-live-preview",
+    "model": "projects/PROJECT_ID/locations/us-central1/publishers/google/models/gemini-3.8-live",
     "systemInstruction": {
       "parts": [{ "text": "You are a warm, concise voice assistant." }]
     },
     "generationConfig": {
       "responseModalities": ["AUDIO"],
-      "thinkingConfig": {
-        "thinkingLevel": "minimal",
-        "includeThoughts": false
-      },
       "speechConfig": {
+        "languageCode": "en-US",
         "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": "Aoede" } }
       }
     },
@@ -204,6 +205,7 @@ A production `setup` frame:
   }
 }
 ```
+*(Use `START_SENSITIVITY_HIGH` + `silenceDurationMs: 500` on clean web/headset mics; switch to `START_SENSITIVITY_LOW` + `silenceDurationMs: 600` to `800` on noisy rooms or PSTN telephony. See [Noise, background speech & VAD](/gemini-live/audio-engineering/noise-and-vad/).)*
 
 The server replies with `{"setupComplete": {"sessionId": "<UUID>"}}`. Log `sessionId`: it persists across reconnects and is the primary trace key for the call.
 
@@ -221,7 +223,7 @@ Input and output sample rates differ. Playing 24 kHz output at 16 kHz sounds slo
 1. **Sending frames before `setupComplete`**: `setup` must be the first frame and must travel alone. Gate all audio and text sends until `setupComplete` arrives.
 2. **Requesting `["AUDIO", "TEXT"]`**: A session returns audio or text, never both as modalities. Requesting both closes the socket with code **`1007`**. Use `outputAudioTranscription` for text alongside speech.
 3. **Treating 10 to 15 minute rotation as a crash**: The server emits `sessionResumptionUpdate` and closes with **`1008`** every 10 to 15 minutes. Reconnect using the resumption handle.
-4. **Resending `setup` to change `systemInstruction`**: `setup` is the first frame only. To change instructions mid-call, send `clientContent` with `role="system"` and `turn_complete=False`, or `context_update` on Vertex AI `gemini-3.8-live`. Both replace the whole instruction in place. See [Pillar 2: Dynamic prompt cards](/gemini-live/optimization/prompt-cards/).
+4. **Resending `setup` to change `systemInstruction` or `tools`**: `setup` is the first frame only. To update instructions or tools mid-call on `gemini-3.8-live`, call `await session.send_context_update(system_instruction=..., tools=...)` (`google-genai >= 2.32.0`, supported on Vertex AI and the Gemini Developer API; confirm Developer API key access before production) or send `clientContent` with `role="system"` and `turn_complete=False` on Vertex AI. Both replace the instruction in place. See [Pillar 2: Dynamic prompt cards](/gemini-live/optimization/prompt-cards/).
 5. **Testing through an HTTP proxy that drops WebSocket upgrades**: If you see immediate **`1006`** closes on a remote VM, forward the port over SSH (`ssh -L 7860:localhost:7860 user@your-dev-vm`) and open `http://localhost:7860/`.
 6. **Not flushing playback on `interrupted`**: When the user barges in, immediately clear your client audio playout queue.
 

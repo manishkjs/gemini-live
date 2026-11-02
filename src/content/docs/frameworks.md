@@ -12,7 +12,7 @@ description: Choosing between the Google GenAI SDK, ADK, Pipecat, and LiveKit fo
     <div class="one-minute-cell"><dt>What this page covers</dt><dd>The four ways to connect callers to Gemini Live (raw SDK, Google ADK, Pipecat, LiveKit) and why a native speech model beats a three-service chain.</dd></div>
     <div class="one-minute-cell"><dt>Why it matters</dt><dd>This is the first architecture decision and the hardest to reverse. It also decides whether you get sub-second replies or a 1 to 2 second pause on every turn.</dd></div>
     <div class="one-minute-cell one-minute-number"><dt>The number to remember</dt><dd>A three-stage cascade takes 1,200 to 2,500 ms per turn. The native path stays under a second.</dd></div>
-    <div class="one-minute-cell"><dt>The decision you own</dt><dd>Phone lines and carrier trunks (Pipecat), browser and mobile apps (LiveKit or raw SDK), or multi-agent systems on Google Cloud (Agent Development Kit, ADK).</dd></div>
+    <div class="one-minute-cell"><dt>The decision you own</dt><dd>Match the transport to how calls arrive: direct GenAI SDK for custom microservices, Google ADK for multi-agent workflows on Google Cloud, LiveKit for global WebRTC rooms and SIP, or Pipecat for Python frame-pipeline connectors.</dd></div>
   </dl>
 </aside>
 
@@ -22,18 +22,18 @@ When building a Gemini Live application, your first architectural decision is ho
 
 ## 1. Framework comparison matrix
 
-| Framework | Primary Strength | Transport Layer | Best Use Case |
+| Option | Primary Strength | Transport Layer | Best Use Case |
 | :--- | :--- | :--- | :--- |
-| **Raw `google-genai` SDK** | Zero framework overhead, direct access to every Bidi API field | Custom WebSocket / WebRTC | Custom backend microservices, lightweight integrations, or full control over `sessionResumption` and `contextWindowCompression`. |
-| **Google Agent Development Kit (ADK)** | Native multi-agent routing, built-in evaluation & Vertex AI Agent Engine integration | FastAPI WebSocket / WebRTC | Enterprise multi-agent systems deployed on Google Cloud with structured sub-agent handoffs. |
-| **Pipecat (`pipecat-ai`)** | Frame-based audio pipeline, 40+ telephony & SIP connectors (Twilio, Daily, Plivo, Telnyx) | WebRTC (Daily / LiveKit) & SIP WebSockets | Contact center telephony, SIP trunking, custom DSP filters, and hybrid voice/video pipelines. |
-| **LiveKit Agents** | Production-grade WebRTC SFU, global edge routing, native browser/mobile SDKs | LiveKit WebRTC | Consumer mobile/web apps requiring low-latency WebRTC, room management, and multi-participant audio/video. |
+| **Direct `google-genai` SDK** | Zero framework overhead, immediate access to every Bidi API field (`send_context_update`, `interaction_status`) | Custom WebSocket / WebRTC | Custom backend microservices, Twilio/carrier media-stream gateways, or full control over `sessionResumption` and `contextWindowCompression`. |
+| **Google Agent Development Kit (ADK)** | First-party multi-agent routing, built-in evaluation & Vertex AI Agent Engine integration | FastAPI WebSocket / WebRTC | Enterprise multi-agent systems deployed on Google Cloud with structured sub-agent handoffs. |
+| **LiveKit Agents** | Production-grade WebRTC SFU, global edge routing, SIP trunking, native browser/mobile SDKs | LiveKit WebRTC & SIP | Consumer mobile/web apps and SIP deployments requiring low-latency WebRTC, room management, and multi-participant audio/video. |
+| **Pipecat (`pipecat-ai`)** | Frame-based Python audio pipeline and prebuilt telephony/DSP connectors | WebRTC & SIP WebSockets | Python pipelines combining custom frame-level DSP filters with prebuilt carrier media-stream adapters. |
 
 ---
 
 ## 2. Native S2S vs. cascaded STT → LLM → TTS inside frameworks
 
-Both Pipecat and LiveKit support two fundamentally different pipeline modes. Make sure you configure the **Native Multimodal / Realtime** node rather than chaining separate STT, LLM, and TTS services:
+Orchestration frameworks support two fundamentally different pipeline modes. Configure the **Native Multimodal / Realtime** node rather than chaining separate STT, LLM, and TTS services:
 
 ### Anti-pattern: The 3-stage cascade
 ```text
@@ -43,7 +43,7 @@ Both Pipecat and LiveKit support two fundamentally different pipeline modes. Mak
 - **Blind to paralinguistics**: Strips tone, hesitation, and emotion before the LLM sees the input.
 - **Triple vendor billing**: Pays separately for ASR per minute, LLM tokens, and TTS characters.
 
-### Recommended: Native Speech-to-Speech (`GeminiMultimodalLiveLLMService`)
+### Recommended: Native Speech-to-Speech
 ```text
 [User Audio (16kHz PCM)] ──► [Gemini Live Bidi WebSocket] ──► [Speaker Audio (24kHz PCM)]
                                          │
@@ -52,6 +52,7 @@ Both Pipecat and LiveKit support two fundamentally different pipeline modes. Mak
 - **Latency**: 400ms to 700ms end-to-end.
 - **Acoustic understanding**: Hears frustration, sarcasm, background noise, and language switches natively.
 - **Single unified stream**: Emits 24kHz audio (`inlineData`), input/output transcriptions, and `toolCall` events over one connection.
+- **Pin `gemini-3.8-live` explicitly in third-party wrappers**: Several open-source realtime adapters (for example `GeminiLiveLLMService` in older `pipecat-ai` releases) default to `gemini-2.5-flash-native-audio-preview-12-2025`, which shuts down on **November 17, 2026**. Always pass `model="gemini-3.8-live"` explicitly.
 
 ### If you keep a cascade: hold the TTS voice steady
 A cascade sends one TTS request per sentence, so each sentence is a fresh generation. With Gemini 3.8 TTS:
@@ -71,4 +72,4 @@ See [Agent Skill §2.C](/gemini-live/gemini-live-skill/) for the full rules and 
 While native Speech-to-Speech is the default for 90% of conversational voice agents, two specialized scenarios justify a hybrid or sidecar architecture:
 
 1. **Strict pre-speech compliance filtering**: If a regulated financial or healthcare environment requires inspecting and redacting the exact text transcript *before* the first millisecond of audio is played to the user, you can either use [Pre-speech compliance guardrails (200ms jitter buffer)](/gemini-live/optimization/#pre-speech-compliance-guardrails-200ms-jitter-buffer) on the native stream, or run Gemini Live in `TEXT` output modality paired with an ultra-low-latency streaming TTS.
-2. **Custom cloned brand voices**: If your application mandates a bespoke voice clone not available in the 30+ prebuilt Gemini HD voices, configure `responseModalities: ["TEXT"]` on Gemini Live (preserving native audio input understanding and VAD) and pipe the text output stream into your custom TTS synthesizer.
+2. **Custom brand voices**: Start with native instant voice cloning via `speechConfig.voiceConfig.replicatedVoiceConfig` (a 10 to 20 second clean 24 kHz mono PCM clip keeps `responseModalities: ["AUDIO"]` and full speech-to-speech latency; see [Configuration reference -> Voices and language](/gemini-live/gemini-live-configuration/#voices-and-language)). Reserve `responseModalities: ["TEXT"]` paired with an external streaming TTS engine only when you are contractually required to synthesize through a specific third-party voice vendor.

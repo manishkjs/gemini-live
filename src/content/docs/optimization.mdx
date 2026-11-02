@@ -1,6 +1,6 @@
 ---
 title: Optimization Patterns (4-Pillar Overview)
-description: Four production patterns for Gemini Live voice sessions, each on its own dedicated page. Three cut multi-turn costs by 62–82% and stop latency from growing on long calls; the fourth removes the cost of fixed lines like greetings.
+description: Four production patterns for Gemini Live voice sessions, each on its own dedicated page. Three cut multi-turn costs by 62 to 82% and stop latency from growing on long calls; the fourth removes the cost of fixed lines like greetings.
 ---
 
 import { LinkCard, CardGrid } from '@astrojs/starlight/components';
@@ -65,7 +65,7 @@ By combining the first three pillars across the call lifecycle, you flatten quad
 
 | Pillar | What it fixes | Mechanism | Measured impact |
 | :--- | :--- | :--- | :--- |
-| <span id="pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker">[Pillar 1: Sliding Window](/gemini-live/optimization/sliding-window/)</span> | Unbounded carried audio (`~1,840 tok/min`) &amp; 15-min ceiling | `SlidingWindow(5000 / 3500)` FIFO turn eviction | Caps active context at 3,500–5,000 tokens |
-| <span id="pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor">[Pillar 2: Prompt Cards &amp; Tools](/gemini-live/optimization/prompt-cards/)</span> | Paying for all phase prompts &amp; all tool schemas on every turn | `role="system"` or `context_update` in-place replacement | `783 tok/turn` vs. `2,493` stacked; `93–768` tool tok (or `0` on farewell) vs. `1,326` |
-| <span id="pillar-3-lossless-history-pruning--session-rotation">[Pillar 3: Lossless Fact Pruning](/gemini-live/optimization/history-pruning/)</span> | Caller details from Turn 1 lost when `SlidingWindow` trims audio | `<60-token` `FactStore` synced into `systemInstruction` | Retains Turn-1 facts in `<60` text tokens (`$0.50–$0.75/1M`) after audio eviction |
+| <span id="pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker">[Pillar 1: Sliding Window](/gemini-live/optimization/sliding-window/)</span> | Unbounded carried audio (`~1,840 tok/min`) &amp; 15-min ceiling | `SlidingWindow(5000 / 3500)` FIFO turn eviction | Caps active context at 3,500 to 5,000 tokens |
+| <span id="pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor">[Pillar 2: Prompt Cards &amp; Tools](/gemini-live/optimization/prompt-cards/)</span> | Paying for all phase prompts &amp; all tool schemas on every turn | `send_context_update` or `role="system"` in-place replacement | `783 tok/turn` vs. `2,493` stacked; `93 to 768` tool tok (or `0` on farewell) vs. `1,326` |
+| <span id="pillar-3-lossless-history-pruning--session-rotation">[Pillar 3: Lossless Fact Pruning](/gemini-live/optimization/history-pruning/)</span> | Caller details from Turn 1 lost when `SlidingWindow` trims audio | `<60-token` `FactStore` synced into `systemInstruction` | Retains Turn-1 facts in `<60` text tokens (`$0.75/1M` on `3.8`, `$0.50/1M` on legacy `2.5`) after audio eviction |
 | <span id="pre-speech-compliance-guardrails-200ms-jitter-buffer">[Pillar 4: Cached TTS &amp; Guardrails](/gemini-live/optimization/cached-tts/)</span> | Paying `$12/1M` + `$3/1M` carried audio for identical greetings | Seed `role="model"` text turn + stream cached 24kHz PCM | `$0.0078` saved per 10-turn call (`$780` per 100k calls) |

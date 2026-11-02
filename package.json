@@ -7,6 +7,9 @@
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
+    "sync-skill": "node scripts/sync-skill.mjs",
+    "check-skill": "node scripts/sync-skill.mjs --check",
+    "prebuild": "node scripts/sync-skill.mjs --check",
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro"

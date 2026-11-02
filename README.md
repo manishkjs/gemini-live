@@ -1,4 +1,4 @@
-# Gemini Live — Developer Docs (Starlight)
+# Gemini Live: Developer Docs (Starlight)
 
 Customer-facing documentation for building real-time voice agents on the Gemini
 Live API. Built with [Astro](https://astro.build) + [Starlight](https://starlight.astro.build).
@@ -15,14 +15,15 @@ Live API. Built with [Astro](https://astro.build) + [Starlight](https://starligh
 cd docs-site
 npm ci
 npm run dev      # http://localhost:4321/gemini-live
-npm run build    # outputs to docs-site/dist
-npm run preview  # serve the production build locally
+npm run sync-skill  # sync SKILL.md mirrors and regenerate gemini-live-skill.mdx
+npm run build       # runs sync-skill --check, then outputs to docs-site/dist
+npm run preview     # serve the production build locally
 ```
 
 ## Deployment (GitHub Pages)
 
-Pushing to `ui-changes-sep` or `main` with changes under `docs-site/**` triggers
-the Pages workflow. **One-time setup:** in the GitHub repo, go to
+Pushing to `main` triggers the GitHub Pages workflow (`.github/workflows/docs.yml`).
+**One-time setup:** in the GitHub repo, go to
 **Settings -> Pages -> Build and deployment -> Source** and select
 **GitHub Actions**.
 
@@ -37,5 +38,5 @@ Published at: `https://manishkjs.github.io/gemini-live/`
 ## Content
 
 Pages live in `src/content/docs/`. Navigation is defined in `astro.config.mjs`.
-Content is written for **external customers** — it deliberately omits any
+Content is written for **external customers**: it deliberately omits any
 Google-internal references.

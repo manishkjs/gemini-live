@@ -258,7 +258,7 @@
       const baseOutCost = duration * 0.018;
       const baseStreamCost = baseInCost + baseOutCost;
 
-      // 2. Unmanaged Prompt Re-Billing ($0.75 / 1M text tokens on 3.1 Flash Live; $0.50 / 1M on 2.5 Native Audio)
+      // 2. Unmanaged Prompt Re-Billing ($0.75 / 1M text tokens on Gemini 3.8 Live; $0.50 / 1M on legacy 2.5)
       const unoptPromptCost = (totalTurns * promptTokens * 0.75) / 1000000;
 
       // 3. Unmanaged Conversational History Re-Billing

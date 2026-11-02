@@ -14,7 +14,7 @@ import OneMinute from '../../components/OneMinute.astro';
   what="How a call flows: one always-open connection, two ways to send input, the three signals that mark a turn, interruptions, and connection rotation."
   why="Almost every 'the agent talked over me' or 'the call dropped' report traces back to one of these four mechanisms being handled wrong."
   number="The server rotates the connection every 10 to 15 minutes. Your client must reconnect without the caller noticing."
-  decide="Whether you build the reconnect-and-replay logic yourself or let a framework such as Pipecat handle it."
+  decide="Whether you build the reconnect-and-replay state machine directly on the SDK or delegate it to an orchestration framework."
 />
 
 Gemini Live is **stateful and bidirectional**. Four concepts govern every production voice session: two input channels, the turn lifecycle, interruptions, and session resumption.
@@ -45,8 +45,9 @@ Three server signals govern turn state and audio playback:
 | Signal | What it means | How your client should react |
 | --- | --- | --- |
 | **`generationComplete`** | The model finished generating tokens on the server. | Stop showing a "thinking/generating" indicator, **but keep the speaker state active** until your local audio playout queue drains. |
-| **`turnComplete`** | The logical turn has concluded on the wire. | Flush your per-turn transcript buffer, record `usageMetadata` once, and mark the turn complete in logs. |
+| **`turnComplete`** | The logical spoken turn has concluded on the wire. | Flush your per-turn transcript buffer, record `usageMetadata` once, and mark the turn complete in logs. |
 | **`interrupted`** | Server VAD detected user barge-in during model output. | Immediately discard all unplayed audio chunks in your local playback queue. |
+| **`interactionStatus`** | Background reasoning / async-tool status on `gemini-3.8-live-extended-thinking` (`"IN_PROGRESS"` or `"IDLE"`). | Wait for `"IDLE"` before treating a multi-step extended-thinking workflow as complete (`turnComplete` only marks the current spoken utterance). |
 
 The gap between `generationComplete` and local buffer drain is often 1 to 3 seconds. If you transition UI state or fire post-speech actions on `generationComplete` instead of waiting for the audio queue to finish playing, your UI will claim the agent is silent while it is still speaking.
 
@@ -82,5 +83,5 @@ To resume without losing conversation context:
 <MessageReplay />
 
 <Aside type="tip">
-Frameworks like Pipecat manage session resumption and message replay automatically (see [Choosing a framework](/gemini-live/frameworks/)). When building directly on a raw WebSocket, implement this replay buffer in your session state machine.
+Orchestration frameworks can manage resumption handles and message replay for you (see [Choosing a framework](/gemini-live/frameworks/)). When building directly on the `google-genai` SDK or a raw WebSocket, implement this replay buffer in your session state machine.
 </Aside>

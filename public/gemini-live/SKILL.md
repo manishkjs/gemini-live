@@ -1,66 +1,67 @@
 ---
-name: gemini-live-external
+name: gemini-live
 description: >-
-  Customer-safe and public GitHub documentation guide for building production
-  voice-to-voice (V2V) AI agents with the Gemini Live API (Gemini 2.5 Flash
-  Native Audio & Gemini 3.1 Flash Live) and Pipecat. Covers all 25 architectural
-  domains: bidirectional WebSocket protocol and compatibility guards, STT/TTS
-  cascaded routing, IAM and local SSH tunneling, Pipecat 1.2+ Silero VAD and
-  receive-loop invariants, diagnostic ring buffers, latency formulas, non-blocking
-  tool calling with AntiCancel shields and CallSlots pruning, guided state
-  machines, persona grammar headers, sub-millisecond BM25/Redis RAG, Frontcar/Downcar
-  memory banks, Live token accounting (bidirectional audio accumulation, barge-in
-  truncation, SlidingWindow 5000/3500 compression, FactStore, Turn-0 cold-start
-  guards, and 7 counter-intuitive truths), Cloud Run deployment, Web Audio
-  AudioWorklet isolation, onTurnComplete 300ms debounce, prompt engineering,
-  greeting recovery, Silent Conductor UI navigation, framework trade-offs, and
-  multi-tier Voice QA. Use ONLY when authoring external customer-facing guides,
-  public GitHub documentation, or docs-site artifacts. For all internal workflows,
-  use gemini-live-internal.
+  Production engineering guide for building, debugging, and optimizing real-time
+  voice-to-voice (V2V) AI agents with the Gemini Live API (Gemini 3.8 Live and
+  Gemini 3.8 Live Extended Thinking, plus migration notes for 2.5 and 3.1).
+  Covers all 25 architectural domains: bidirectional WebSocket protocol and
+  compatibility guards, STT/TTS cascaded routing, IAM and local SSH tunneling,
+  duplex media-gateway VAD and receive-loop invariants, diagnostic ring buffers,
+  latency formulas, non-blocking tool calling with asyncio cancellation shields
+  and CallSlots pruning, guided state machines, persona grammar headers,
+  sub-millisecond BM25/Redis RAG, Frontcar/Downcar memory banks, Live token
+  accounting (bidirectional audio accumulation, barge-in truncation,
+  SlidingWindow 5000/3500 compression, FactStore, Turn-0 cold-start guards, and
+  7 counter-intuitive truths), Cloud Run deployment, ephemeral client tokens,
+  Web Audio AudioWorklet isolation and 5-layer noise/crosstalk isolation,
+  onTurnComplete 300ms debounce, prompt engineering, greeting recovery, Silent
+  Conductor UI navigation, framework trade-offs across integration options, and
+  multi-tier Voice QA. Use whenever building, debugging, reviewing, or optimizing real-time voice or multimodal agents on the Gemini Live API.
 ---
 
-# Gemini Live API & Pipecat Production Engineering Reference (Complete 25-Section Handbook)
-
-> **Skill Routing Rule**: Use `gemini-live-external` **only** when generating external customer-facing documentation, public GitHub repository content, or `docs-site/` files. For all internal engineering, debugging, benchmarking, and analysis, always use **`gemini-live-internal`**.
+# Gemini Live API Production Engineering Reference (Complete 25-Section Handbook)
 
 ---
 
 ## 1. Protocol, Endpoints, Model Compatibility & Framing Matrix
 
-| Parameter | Google AI Studio (Developer API) | Vertex AI (Production GA & Preview) |
+| Parameter | Google AI Studio (Gemini Developer API) | Vertex AI (Google Cloud Production) |
 |---|---|---|
 | **Base Host** | `generativelanguage.googleapis.com` | `{region}-aiplatform.googleapis.com` (for example `us-central1-aiplatform.googleapis.com`) |
-| **API Version** | `v1alpha` or `v1beta` | `v1beta1` *(do not use `v1` for Live Bidi endpoints)* |
+| **API Version** | `v1beta` (or `v1alpha` for experimental features) | `v1beta1` or `v1` (`v1beta1` required for `proactivity` / `enableAffectiveDialog`) |
 | **WebSocket Path** | `/ws/google.ai.generativelanguage.{ver}.GenerativeService.BidiGenerateContent` | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` |
-| **Auth Method** | `?key=$GEMINI_API_KEY` | `Authorization: Bearer $(gcloud auth print-access-token)` (Application Default Credentials) |
+| **Auth Method** | Server: `?key=$GEMINI_API_KEY`; Browser/Mobile: short-lived ephemeral token (`client.auth_tokens.create`, §15) | `Authorization: Bearer $(gcloud auth print-access-token)` (Application Default Credentials) |
 | **Headers** | `Content-Type: application/json` | `Content-Type: application/json` |
-| **Supported Models** | `models/gemini-3.1-flash-live-preview` | `projects/{PROJECT_ID}/locations/us-central1/publishers/google/models/gemini-live-2.5-flash-native-audio` |
-| **Usage Metadata Fidelity** | Includes a per-turn unattributed `prompt_token_count` residual (`93 to 221 tok/turn`) and omits `thoughts_token_count` from `total_token_count` | Exact reconciliation (`prompt_token_count == Prompt_TEXT + Prompt_AUDIO`, `residual = 0`) and includes `thoughts_token_count` in `total_token_count` |
+| **Current GA Models** | `models/gemini-3.8-live` (default low-latency), `models/gemini-3.8-live-extended-thinking` (background reasoning) | `projects/{PROJECT_ID}/locations/{REGION}/publishers/google/models/gemini-3.8-live`, `.../gemini-3.8-live-extended-thinking` |
+| **Retiring Legacy Models** | `models/gemini-3.1-flash-live-preview` & `models/gemini-2.5-flash-native-audio-preview-12-2025` *(shut down November 17, 2026; migrate to `gemini-3.8-live`)* | `.../models/gemini-live-2.5-flash-native-audio` *(retires December 13, 2026; migrate to `gemini-3.8-live`)* |
+| **Usage Metadata Fidelity** | Includes a per-turn unattributed `prompt_token_count` residual on preview traces and can omit `thoughts_token_count` from `total_token_count` | Exact reconciliation (`prompt_token_count == Prompt_TEXT + Prompt_AUDIO`, `residual = 0`) and includes `thoughts_token_count` in `total_token_count` |
 
-### Protocol, Framing & Model Compatibility Invariants (Gemini 2.5 vs. Gemini 3.1 Live)
+### Protocol, Framing & Model Compatibility Invariants (`gemini-3.8-live` & `gemini-3.8-live-extended-thinking`)
 
-When building or migrating between `gemini-live-2.5-flash-native-audio` and `gemini-3.1-flash-live-preview`, enforce these seven protocol invariants:
+When building on **Gemini 3.8 Live** (or migrating from retiring `gemini-3.1-flash-live-preview` / `gemini-live-2.5-flash-native-audio`), enforce these eight protocol invariants:
 
 1. **`response_modalities` Must Be Singleton `["AUDIO"]`**:
    - Never pass `["AUDIO", "TEXT"]` in `LiveConnectConfig`. Requesting dual modalities triggers an immediate WebSocket close with `1007 Invalid Argument`. Retrieve text transcripts via `input_audio_transcription` and `output_audio_transcription`.
-2. **`proactive_audio` & `enable_affective_dialog` Compatibility Guard**:
-   - `gemini-live-2.5-flash-native-audio` supports `proactive_audio=True` and `enable_affective_dialog=True`.
-   - Setting either flag on `gemini-3.1-flash-live-preview` triggers a `1007` WebSocket handshake failure. Gate both parameters behind `"2.5" in model_id`.
-3. **Wire Format Changes (`realtime_input` vs. `client_content`)**:
-   - On Gemini 3.1 Live, `send_realtime_input(media=...)` is deprecated in favor of `send_realtime_input(audio=Blob(data=pcm, mime_type="audio/pcm;rate=16000"))` and `send_realtime_input(text=...)`.
-   - `send_client_content` on Gemini 3.1 Live only supports **appending** turns (`turn_complete=True` or `turn_complete=False`) and cannot replace prior conversation history mid-session.
-4. **Thinking Configuration (`thinking_level` vs. `thinking_budget`)**:
-   - **Gemini 2.5 Flash Native Audio**: Accepts `ThinkingConfig(thinking_budget=0, include_thoughts=False)` to disable thinking completely.
-   - **Gemini 3.1 Flash Live**: Uses discrete `ThinkingLevel` (`"MINIMAL"`, `"LOW"`, `"MEDIUM"`, `"HIGH"`). Never pass `thinking_budget=0` to Gemini 3.1 Live; it degrades multi-step tool parameter copying and slot accuracy in multi-turn tool workflows. Always configure `ThinkingConfig(thinking_level="MINIMAL", include_thoughts=False)`.
-   - **Base Gemini 3.8 Live (`gemini-3.8-live`)**: A non-thinking endpoint. Omit `thinking_config` entirely; reasoning is served by the separate `-thinking` model variants.
-5. **S2ST Interpreter Mode vs. Conversational Agent Mode**:
+2. **`proactive_audio` & `enable_affective_dialog` Support (`3.8` & `2.5` Supported; `3.1` Unsupported)**:
+   - Both `gemini-3.8-live` and `gemini-3.8-live-extended-thinking` (as well as legacy `2.5`) support `proactivity=types.ProactivityConfig(proactive_audio=True)` and `enable_affective_dialog=True` on `v1beta` / `v1beta1`.
+   - Retiring `gemini-3.1-flash-live-preview` did not support either feature and closed with `1007` when they were set.
+3. **Wire Format (`realtime_input` vs. `client_content`)**:
+   - Use `send_realtime_input(audio=types.Blob(data=pcm, mime_type="audio/pcm;rate=16000"))` for continuous microphone PCM and `send_realtime_input(audio_stream_end=True)` when pausing or muting the microphone so server VAD flushes buffered audio cleanly.
+   - On `gemini-3.8-live` and `gemini-3.8-live-extended-thinking`, `send_client_content` is supported both for seeding initial history (`turn_complete=False`) and for appending mid-session turns or replacing `role="system"` instructions on Vertex AI (§22.C). Setting `turn_complete=True` interrupts active generation.
+4. **Thinking Configuration (`gemini-3.8-live` vs. `gemini-3.8-live-extended-thinking`)**:
+   - **`gemini-3.8-live` (Default Low-Latency GA)**: Operates exclusively at minimal thinking for the fastest time-to-first-audio. **Omit `thinking_config` / `thinking_level` entirely** in `LiveConnectConfig`.
+   - **`gemini-3.8-live-extended-thinking` (Background Reasoning GA)**: Supports configurable `thinking_level` (`"low"`, `"medium"`, `"high"`; defaults to `"HIGH"`), thought summaries (`include_thoughts=True`), and background tool planning while speaking natural conversational fillers. All custom `FunctionDeclaration` objects **must** set `behavior="NON_BLOCKING"`.
+   - **Legacy Models**: `gemini-live-2.5-flash-native-audio` used `ThinkingConfig(thinking_budget=0)`; retiring `gemini-3.1-flash-live-preview` required `ThinkingConfig(thinking_level="minimal")`.
+5. **Tracking `interaction_status` on `gemini-3.8-live-extended-thinking`**:
+   - On `gemini-3.8-live-extended-thinking`, `turn_complete=True` marks the end of a spoken utterance (such as a conversational filler), **not** necessarily the end of background reasoning or asynchronous tool execution. Inspect `message.server_content.interaction_status` (`types.InteractionStatus.IN_PROGRESS` vs. `types.InteractionStatus.IDLE`; wire field `serverContent.interactionStatus`): treat the model turn as fully settled only when `sc.interaction_status == types.InteractionStatus.IDLE`.
+6. **S2ST Interpreter Mode vs. Conversational Agent Mode**:
    - Do not combine `TranslationConfig` (continuous speech-to-speech simultaneous interpretation) with conversational system instructions or function calling. Keep unidirectional S2ST interpreter pipelines and interactive bidirectional voice agents strictly separate.
-6. **Session Lifecycle Rotation (10 to 15 min)**:
-   - The server rotates WebSocket connections after 10 to 15 minutes with close code `1008` after emitting a `session_resumption_update` event. Reconnect automatically using `session_resumption_handle=new_handle`.
-7. **Audio Formats & Setup Handshake ACK**:
+7. **Session Lifecycle Rotation (10 to 15 min)**:
+   - The server rotates WebSocket connections after 10 to 15 minutes (`goAway` followed by close) and emits `session_resumption_update` handles. Enable `SessionResumptionConfig` and reconnect automatically with `handle=latest_handle`.
+8. **Audio Formats & Setup Handshake ACK**:
    - **Input Audio (User to Gemini)**: PCM 16kHz 16-bit little-endian mono (`audio/pcm;rate=16000`).
    - **Output Audio (Gemini to Client)**: PCM 24kHz 16-bit little-endian mono (`audio/pcm;rate=24000`).
-   - **Setup Handshake ACK**: Vertex AI emits `{"setupComplete": {"sessionId": "<UUID>"}}` before streaming audio.
+   - **Setup Handshake ACK**: Wait for `setupComplete` before streaming audio frames.
 
 ---
 
@@ -72,20 +73,22 @@ When building or migrating between `gemini-live-2.5-flash-native-audio` and `gem
   - **AI Studio `AudioTranscriptionConfig` Invariant**: The `language_codes` field inside `AudioTranscriptionConfig` is only supported on Vertex AI (`USE_VERTEXAI=true`). Some `google-genai` releases raise the error below when you pass `language_codes` in Google AI Studio mode (`GEMINI_API_KEY`); newer releases forward the field instead, so do not rely on a client-side error:
     `ValueError: language_codes parameter is only supported in Vertex AI mode, not in Gemini Developer API mode.`
     When operating in AI Studio mode, instantiate `AudioTranscriptionConfig()` with zero arguments.
-  - **Model-Generation Thinking Config Invariant (`thinking_budget=0` vs. `ThinkingLevel.MINIMAL`)**:
+  - **Model-Generation Thinking Config Helper (`3.8-live` vs. `3.8-live-extended-thinking` vs. Legacy)**:
     ```python
     from google.genai import types
 
-    if "2.5" in model_id:
-        thinking_cfg = types.ThinkingConfig(thinking_budget=0, include_thoughts=False)
-    elif "3.8" in model_id and "thinking" not in model_id:
-        thinking_cfg = None  # base 3.8 Live does not take thinking_level
-    else:
-        level = getattr(types.ThinkingLevel, "MINIMAL", "minimal")
-        thinking_cfg = types.ThinkingConfig(thinking_level=level, include_thoughts=False)
+    def build_thinking_config(model_id: str) -> types.ThinkingConfig | None:
+        if "3.8-live-extended-thinking" in model_id:
+            # Configurable: "low", "medium", or "high" (server default is "high")
+            return types.ThinkingConfig(thinking_level="low", include_thoughts=False)
+        if "3.8-live" in model_id:
+            return None  # omit thinking_config on base gemini-3.8-live
+        if "2.5" in model_id:
+            return types.ThinkingConfig(thinking_budget=0, include_thoughts=False)
+        return types.ThinkingConfig(thinking_level="minimal", include_thoughts=False)
     ```
-  - **Pipecat 1.2+ `LLMUserAggregator` Turn Invariant**: `LLMUserAggregator` ignores `InterimTranscriptionFrame`. Custom STT services must emit `TranscriptionFrame` and call `_handle_transcription(transcript, is_final=True)` to commit speech text into the LLM turn context.
-  - **Pipecat 1.2+ VAD Config Invariant**: `FastAPIWebsocketParams` does not accept `vad_analyzer` (passing it raises a `TypeError`). Connect `VADProcessor` directly inside the frame pipeline.
+  - **Cascaded STT Final-Commit Invariant**: In modular `STT -> LLM -> TTS` cascades, ignore interim partial transcripts when triggering LLM turns; commit speech into the LLM turn context only when the streaming recognizer emits a finalized segment (`is_final=True`) paired with endpointing / VAD silence confirmation.
+  - **Transport vs. VAD Separation**: Keep audio transport framing (WebSocket/SIP socket I/O) decoupled from your server-side VAD analyzer stage so raw PCM passes through optional noise/voice-isolation filters before VAD speech-probability scoring.
 * **`chirp_3` (Cloud Speech-to-Text v2 Multilingual Sidecar)**:
   - **Location Invariant**: Must use `location="us"` (US Multi-Region) with regional endpoint `us-speech.googleapis.com`. Calling `us-central1` fails with `400 Expected resource location to be us`.
   - **Languages**: Pass `language_codes=["en-US", "hi-IN"]` for simultaneous multilingual recognition.
@@ -95,8 +98,8 @@ When building or migrating between `gemini-live-2.5-flash-native-audio` and `gem
 
 ### B. Cascaded Model Tier Standards (STT -> LLM -> TTS Alternative Pipeline)
 When operating a modular cascaded pipeline alongside native Speech-to-Speech:
-* **Default STT**: Cloud Speech-to-Text v2 (`chirp_3` in `location="us"`) or Gemini Live STT (`response_modalities=["TEXT"]`).
-* **Default LLM**: `gemini-2.5-flash-lite` or `gemini-2.5-flash` (`thinking_budget=0` for low-latency dialogue).
+* **Default STT**: Cloud Speech-to-Text v2 (`chirp_3` in `location="us"`) or Gemini Live STT.
+* **Default LLM**: `gemini-3.8-flash` (with minimal thinking for low-latency dialogue) or `gemini-2.5-flash-lite` (`thinking_budget=0` for high-volume classification and simple routing).
 * **Default TTS**: `gemini-3.8-flash-tts` (highest speaker-identity stability across turns), `gemini-3.8-flash-lite-tts` (lower-cost option paired with a constant baseline `speech_metadata.style`), or Cloud Text-to-Speech `chirp_3` HD voices.
 
 ### C. Gemini 3.8 TTS Voice Consistency & Cloned Voices in a Cascade
@@ -115,12 +118,12 @@ A cascaded pipeline synthesizes each text chunk as an independent Gemini 3.8 TTS
   - Streamed `inline_data.data` chunks can split on odd byte boundaries (`len(chunk) % 2 == 1`), swapping low and high bytes on every subsequent `Int16` sample. Carry any trailing odd byte across chunks (`even_len = len(raw) & ~1`) and strip any `RIFF...WAVE` header before emitting raw PCM frames.
 
 ### D. Native Audio Language Choice, `speech_config.language_code`, `ReplicatedVoiceConfig` & Silence Watchdogs (Live)
-* **How `(voice_name, speech_config.language_code)` selects the Turn-1 studio voice sample**:
-  - Even though native audio output models can switch spoken languages mid-call, on Vertex AI (`gemini-3.8-live`) the pair `(voice_name, speech_config.language_code)` selects which `~224 to 239`-token studio audio recording is loaded into the system prompt at session start.
-  - When `speech_config.language_code` is **omitted**, passed as a bare language tag without a region (`"en"`, `"hi"`), or set to a regional code without a dedicated studio recording (`bn-IN`, `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `ur-IN`), the server falls back to `"en-US"` and loads an American English studio voice sample.
-  - Setting `speech_config.language_code = "en-IN"` (or `"hi-IN"`, `"mr-IN"`, `"ta-IN"`, `"te-IN"`) loads the Indian-accented studio voice sample from Turn 1 without blocking mid-call language switching into Hindi, Hinglish, or regional languages (avoid hard-coding `"always speak English only"` in `system_instruction` on multilingual agents).
+* **How `(voice_name, speech_config.language_code)` selects the Turn-1 voice reference**:
+  - Even though native audio output models can switch spoken languages mid-call, in tests on Vertex AI (`gemini-3.8-live`) the pair `(voice_name, speech_config.language_code)` determines the Turn-1 accent baseline.
+  - When `speech_config.language_code` is **omitted**, passed as a bare language tag without a region (`"en"`, `"hi"`), or set to a regional code without a dedicated studio voice preset (`bn-IN`, `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `ur-IN`), Turn 1 defaults to an `"en-US"` accent on Vertex AI.
+  - Setting `speech_config.language_code = "en-IN"` (or `"hi-IN"`, `"mr-IN"`, `"ta-IN"`, `"te-IN"`) anchors an Indian-accented voice from Turn 1 without blocking mid-call language switching into Hindi, Hinglish, or regional languages (avoid hard-coding `"always speak English only"` in `system_instruction` on multilingual agents).
 * **Custom Voice Cloning (`ReplicatedVoiceConfig`), Solo Reference Audio & Anti-Aliased `24 kHz` Resampling**:
-  - Pass `speech_config.voice_config.replicated_voice_config` with a 10 to 20s clean 24 kHz mono 16-bit PCM (`audio/pcm;rate=24000`) reference clip recorded in a quiet room by a single speaker. Trim any leading/trailing room chatter or secondary voices: even under one second of background speech in the reference clip is tokenized into the voice conditioning prompt and causes mid-call pitch or speaker shifts.
+  - Pass `speech_config.voice_config.replicated_voice_config` with a 10 to 20s clean 24 kHz mono 16-bit PCM (`audio/pcm;rate=24000`) reference clip recorded in a quiet room by a single speaker. Trim any leading/trailing room chatter or secondary voices: even under one second of background speech in the reference clip conditions the cloned voice and causes mid-call pitch or speaker shifts.
   - When capturing reference clips in the browser at `48 kHz` and downsampling to `24 kHz`, use an anti-aliased low-pass resampler (a Blackman-windowed sinc filter in JavaScript and `soxr.resample(..., quality="HQ")` on the server) rather than 2-point linear interpolation (`np.interp`), which folds `12 to 24 kHz` sibilance back into the speech band. Connect browser recording nodes to a muted `GainNode(0)` sink rather than directly to `AudioContext.destination` so live microphone audio never bleeds out of the speakers during capture.
 * **Server-Side Trailing Digital-Silence Watchdog**:
   - On cloned-voice Live sessions, the stream can occasionally finish audible speech and then emit prolonged `0x0000` PCM silence frames before `turn_complete` arrives, stalling turn-end events and downstream state transitions. Track consecutive near-zero PCM bytes (`peak <= 2` in 16-bit PCM) *after* audible speech in the active turn; if silent PCM exceeds `2.5s` without `turn_complete`, close the local turn once, drop subsequent silent tail frames, and deduplicate the delayed `turn_complete` when it arrives.
@@ -147,110 +150,80 @@ Grant the runtime service account the following least-privilege IAM roles:
 
 ---
 
-## 4. Duplex Voice Pipeline, Idle Routing & Silero VAD Architecture
+## 4. Duplex Voice Pipeline, Receive Loop, Idle Routing & Output Framing
 
-### A. Silero VAD Processor Invariant (Pipecat 1.2+)
-* **`FastAPIWebsocketParams` Limitation**: In Pipecat 1.2+, WebSocket transports (`FastAPIWebsocketTransport`) do not run VAD internally. Passing `vad_analyzer` to `FastAPIWebsocketParams` is ignored or raises a `TypeError`.
-* **Canonical VAD Pipeline Pattern**:
-  1. Instantiate `SileroVADAnalyzer` with conversational parameters:
-     ```python
-     from pipecat.audio.vad.silero import SileroVADAnalyzer
-     from pipecat.audio.vad.vad_analyzer import VADParams
-     from pipecat.processors.audio.vad_processor import VADProcessor
+### A. Client-Controlled VAD (`activity_start` / `activity_end`) & Silero Thresholds
+* **When to Disable Server VAD**: Keep Gemini Live's server-side VAD enabled (`automatic_activity_detection.disabled=False`) by default. Switch to manual client-side VAD (`disabled=True` + explicit `session.send_realtime_input(activity_start=...)` / `activity_end=...`) only when running a dedicated server-side voice-isolation DSP + Silero VAD stage on noisy telephony trunks, or when you need synchronous pre-turn `send_context_update` calls before `activity_end` (§18.Q).
+* **Recommended Silero VAD Thresholds (When Using Local VAD)**:
+  - Speech probability threshold (`confidence` / `threshold`): `0.7` (filters breaths, key clicks, and brief line pops).
+  - Speech onset confirmation (`start_secs`): `0.2s` (`200ms`, matching `prefix_padding_ms=200`).
+  - Silence turn-end threshold (`stop_secs`): `0.5s` for clean web audio (`0.6s` to `0.8s` on noisy telephony; `1.2s` when collecting phone numbers or spelled names).
+  - Pre-roll ring buffer: buffer `200ms` of PCM frames before `activity_start` so initial consonants (`"S"`, `"P"`, `"B"`) are never clipped when speech onset is confirmed.
 
-     vad_analyzer = SileroVADAnalyzer(
-         params=VADParams(
-             confidence=0.7,      # Strict speech probability threshold (filters breaths/clicks)
-             start_secs=0.2,      # 200ms speech onset confirmation
-             stop_secs=0.4,       # 400ms natural conversational pause threshold
-             min_volume=0.6,      # Minimum volume threshold to ignore ambient room noise
-         )
-     )
-     vad_processor = VADProcessor(vad_analyzer=vad_analyzer)
-     ```
-  2. Insert `vad_processor` immediately after `start_trigger` in `pipeline_elements` to emit `VADUserStartedSpeakingFrame` and `VADUserStoppedSpeakingFrame` downstream:
-     ```python
-     pipeline_elements = [
-         transport.input(),
-         start_trigger,
-         vad_processor,
-         stt,
-         TranscriptionBroadcaster(participant="User"),
-         context_aggregator.user(),
-         llm,
-         TranscriptionBroadcaster(participant="Bot"),
-         tts,
-         context_aggregator.assistant(),
-         transport.output()
-     ]
-     ```
-  3. Pass `vad_analyzer` to `LLMUserAggregatorParams` so turn-taking boundaries synchronize with LLM context aggregation:
-     ```python
-     user_params = LLMUserAggregatorParams(vad_analyzer=vad_analyzer)
-     context_aggregator = LLMContextAggregatorPair(context, user_params=user_params)
-     ```
+### B. Greeting Turn Single-Trigger Invariant (Anti-Duplicate Audio)
+* Trigger the opening greeting from **one** place only: either play a pre-synthesized cached greeting after seeding `role="model"` (`turn_complete=False`, §20.C), or send a single language-neutral stage stub (`GREETING_STUB` with `turn_complete=True`, §18.N).
+* **Never** fire both a context-initialization turn and a separate run trigger on session open; dispatching two `turn_complete=True` triggers back to back produces overlapping duplicate greetings.
 
-### B. Greeting Turn Invariant (Anti-Duplicate Audio)
-* In `StartTriggerProcessor.process_frame()`, push **ONLY** `LLMRunFrame()`.
-* **NEVER** push both `LLMContextFrame` and `LLMRunFrame()`. `LLMUserAggregator` emits context automatically upon receiving `LLMRunFrame()`; pushing both triggers duplicate parallel greeting speech.
-
-### C. Pipecat Upstream Frame Routing & User Idle Management
-* **Upstream Silence Blindness Hazard**: Pipecat transports push audio downstream to the LLM, and the LLM emits `TranscriptionFrame`, `UserStartedSpeakingFrame`, and `InterruptionFrame` downstream. Any `FrameProcessor` (such as `UserIdleProcessor`) placed *upstream* of the LLM never sees downstream transcription frames. A short idle timeout (such as 5s) will mistakenly treat active user speech as silence and disconnect the call.
-* **The Solution**: Wire direct activity reporting from the LLM service to the idle processor:
+### C. Activity-Aware User Idle Timer
+* **Upstream Silence Blindness Hazard**: In layered media gateways where raw audio flows upstream-to-downstream into the Gemini Live session and `input_audio_transcription` events are emitted downstream from the Live receive loop, an idle timer watching only raw socket packets or placed ahead of the Live session can misclassify active speech as silence (or treat constant comfort noise as speech).
+* **The Solution**: Reset the user-idle timer directly from `server_content.input_transcription` and `voice_activity` events inside your Live receive loop:
   ```python
-  # inside your Live LLM service
-  if hasattr(self, "user_idle_processor") and self.user_idle_processor:
-      self.user_idle_processor.record_activity("speech_transcription")
+  if sc and sc.input_transcription and sc.input_transcription.text:
+      idle_monitor.record_activity("speech_transcription")
   ```
-* **Cadence Guidelines**: Use a 15s idle timer with check-in prompts at 15s, 30s, and 45s, disconnecting only after 60s of uninterrupted silence.
+* **Cadence Guidelines**: Use a 15s idle timer with polite check-in prompts at 15s, 30s, and 45s, disconnecting only after 60s of uninterrupted silence.
 
-### D. Pipecat WebSocket Receive Loop Invariant: Never Chain `server_content` Fields with `elif`
+### D. `AsyncSession.receive()` Loop Invariant: Never Chain `server_content` Fields with `elif`
 * **The Terminal Frame Co-Occurrence Trap**: In `google-genai` `AsyncSession.receive()`, Gemini Live frequently sends a terminal WebSocket frame where **both** `message.server_content.model_turn` (the final audio chunk) **and** `message.server_content.turn_complete = True` (or `output_transcription`) are populated on the same message.
-* **Anti-Pattern (`elif` Chain)**: Chaining `if sc.interrupted: ... elif sc.model_turn: ... elif sc.turn_complete: ... elif sc.output_transcription:` causes `_handle_msg_turn_complete` and `_handle_msg_output_transcription` to be skipped whenever `model_turn` is present on the final frame. Consequently, Pipecat never emits `LLMFullResponseEndFrame` for that turn, stalling `LLMAssistantResponseAggregator` and mis-bucketing per-turn usage rollups.
-* **Canonical Pattern (Independent `if` Blocks)**:
+* **Anti-Pattern (`elif` Chain)**: Chaining `if sc.interrupted: ... elif sc.model_turn: ... elif sc.turn_complete: ... elif sc.output_transcription:` skips your `turn_complete` and `output_transcription` handlers whenever `model_turn` is present on the final frame, stalling turn state machines and mis-bucketing per-turn `usage_metadata` rollups.
+* **Canonical Pattern (Independent `if` Blocks + `interaction_status` for 3.8 Extended Thinking)**:
   ```python
   sc = message.server_content
   if sc:
       if sc.interrupted:
-          await host.broadcast_interruption()
+          await on_interrupted()
       if sc.model_turn:
-          await host._handle_msg_model_turn(message)
+          await on_model_turn(sc.model_turn)
       if sc.input_transcription:
-          await host._handle_msg_input_transcription(message)
+          await on_input_transcription(sc.input_transcription)
       if sc.output_transcription:
-          await host._handle_msg_output_transcription(message)
+          await on_output_transcription(sc.output_transcription)
       if sc.grounding_metadata:
-          await host._handle_msg_grounding_metadata(message)
+          await on_grounding_metadata(sc.grounding_metadata)
       if sc.turn_complete:
-          await host._handle_msg_turn_complete(message)
+          await on_turn_complete(message.usage_metadata)
+      # On gemini-3.8-live-extended-thinking, wait for IDLE before treating background reasoning as done:
+      if sc.interaction_status == types.InteractionStatus.IDLE:
+          await on_interaction_idle()
   if message.tool_call:
-      await host._handle_msg_tool_call(message)
+      await on_tool_call(message.tool_call)
   ```
 
-### E. Pipecat `ContextWindowCompressionConfig` & `SlidingWindow` Wiring Invariant
-* **Silent No-Op Anti-Pattern**: Passing a plain dictionary (`{"enabled": True, "trigger_tokens": ...}`) or storing `target_tokens` inside `kwargs["extra"]` on `GeminiLiveInputParams` is silently ignored by Pipecat, leaving long calls with unbounded audio and tool-result history.
-* **Canonical Pattern**: Always construct a typed `types.ContextWindowCompressionConfig` with `trigger_tokens=5000` (the Vertex AI minimum trigger floor) and `types.SlidingWindow(target_tokens=3500)`:
+### E. Typed `ContextWindowCompressionConfig` & `SlidingWindow` Wiring Invariant
+* **Silent No-Op Anti-Pattern**: Passing untyped custom keys or plain dictionaries to wrapper `extra` bags can silently drop context compression, leaving long calls with unbounded audio and tool-result history.
+* **Canonical Pattern**: Always construct a typed `types.ContextWindowCompressionConfig` on `LiveConnectConfig` with `trigger_tokens=5000` (the Vertex AI minimum trigger floor) and `types.SlidingWindow(target_tokens=3500)`:
   ```python
   from google.genai import types
 
-  if compression_enabled and trigger_tokens:
-      target_tokens = target_tokens or 3500
-      kwargs["context_window_compression"] = types.ContextWindowCompressionConfig(
-          trigger_tokens=trigger_tokens,
-          sliding_window=types.SlidingWindow(target_tokens=target_tokens),
-      )
+  config = types.LiveConnectConfig(
+      response_modalities=["AUDIO"],
+      context_window_compression=types.ContextWindowCompressionConfig(
+          trigger_tokens=5000,
+          sliding_window=types.SlidingWindow(target_tokens=3500),
+      ),
+  )
   ```
 
-### F. Pipecat `1.2+` Output `MediaSender` `40 ms` Tail Flush, 2-Byte `s16le` Alignment & `InterruptionFrame`-Only RTVI Interruptions
-* **Flush sub-chunk utterance tails before `TTSStoppedFrame`**:
-  - In Pipecat `1.2+`, `BaseOutputTransport.MediaSender` slices outgoing audio into `40 ms` chunks (`int(sample_rate / 100) * channels * 2 * 4`, or `1920` bytes at `24 kHz` mono) and resets `self._audio_buffer = bytearray()` on `TTSStoppedFrame` / `BotStoppedSpeakingFrame` without transmitting trailing bytes smaller than one `40 ms` chunk, clipping final syllables.
-  - Pad the end of each spoken utterance with `b"\x00" * ((chunk_bytes - (utterance_bytes % chunk_bytes)) % chunk_bytes)` right before `TTSStoppedFrame`, and set `audio_in_sample_rate=16000, audio_out_sample_rate=24000, add_wav_header=False` explicitly on `FastAPIWebsocketParams` plus `audio_out_sample_rate=24000` on `PipelineParams` so `24 kHz` model output is never resampled through a `16 kHz` default.
+### F. Output Media Framing: `40 ms` Tail Padding, 2-Byte `s16le` Alignment & Barge-In-Only Interrupts
+* **Flush sub-chunk utterance tails before closing an utterance**:
+  - Media gateways and telephony senders that slice outgoing `24 kHz` mono PCM into fixed `40 ms` (`1,920`-byte) chunks often clear their staging buffer on turn-end events without flushing trailing bytes smaller than one chunk, clipping final syllables.
+  - Pad the end of each spoken utterance with `b"\x00" * ((chunk_bytes - (utterance_bytes % chunk_bytes)) % chunk_bytes)` before signaling utterance completion, and keep input at `16000 Hz` and output at `24000 Hz` (`add_wav_header=False`) so `24 kHz` model audio is never accidentally downsampled through a `16 kHz` default.
 * **Preserve 2-byte `s16le` alignment in custom WebSocket serializers**:
   - Carry any trailing odd byte (`pcm_carry`) across outgoing audio frames and strip any `RIFF...WAVE` header before serializing raw PCM over WebSocket so odd-byte boundaries never byte-swap `Int16` samples.
-* **Emit RTVI `interruption` frames only on `InterruptionFrame`**:
-  - `VADUserStartedSpeakingFrame` fires on every normal caller turn start, including when the bot is silent. Emit urgent RTVI `interruption` messages strictly on `InterruptionFrame` (genuine barge-in) so normal Turn 2+ caller utterances do not inflate interruption metrics or flush client playback queues.
-* **Cancel cascaded pipelines on `on_client_disconnected`**:
-  - Register `@transport.event_handler("on_client_disconnected")` calling `await task.cancel()` on cascaded pipelines so upstream streaming STT WebSockets close immediately when a caller hangs up.
+* **Emit client `interruption` events only on genuine barge-in (`sc.interrupted == True`)**:
+  - Local VAD speech-start events fire on every normal caller turn, including when the bot is silent. Emit urgent client playback-flush (`interruption`) messages strictly when the bot was actively speaking (`sc.interrupted == True`) so normal Turn 2+ caller utterances do not inflate interruption metrics.
+* **Tear down upstream streams immediately on client disconnect**:
+  - Cancel background session tasks and close upstream Live / STT WebSockets immediately in your disconnect `finally:` block so hung-up callers never continue billing idle audio seconds.
 
 ---
 
@@ -305,7 +278,7 @@ if getattr(self, "_current_turn_ttft", None) is None and getattr(self, "_my_ttfb
 
 ---
 
-## 7. Tool-Calling Architecture, `AntiCancel` Shield & `CallSlots` Pattern
+## 7. Tool-Calling Architecture, Cancellation Shield & `CallSlots` Pattern
 
 ### A. Session Resumption Handles vs. Stable Session IDs
 * **Ephemeral Handles**: The Live API mints a new `session_resumption_handle` after every turn.
@@ -317,34 +290,39 @@ if getattr(self, "_current_turn_ttft", None) is None and getattr(self, "_my_ttfb
 3. **Dynamic Tool Allow-Lists**: Expose only the minimal subset of tools valid for the active conversation state.
 
 ### C. Non-Blocking Function Calling (`behavior: "NON_BLOCKING"`)
-* **Setup Declaration**: Declare `"behavior": "NON_BLOCKING"` in `function_declarations` so the model can speak a natural filler phrase (*"Let me check your account details..."*) while your backend executes the API call.
+* **Model Support & Setup Declaration**: Declare `behavior="NON_BLOCKING"` in `types.FunctionDeclaration` so the model can speak a natural filler phrase (*"Let me check your account details..."*) while your backend executes the API call. Asynchronous (`NON_BLOCKING`) function calling is supported on `gemini-3.8-live` and `2.5`, **required** on `gemini-3.8-live-extended-thinking` (blocking declarations return an error), and was not supported on retiring `gemini-3.1-flash-live-preview`.
 * **Avoid Prompt Hijacking**: Never intercept tool calls to dispatch `send_client_content("speak exactly...")` with `turn_complete=True`.
 * **Correct Pattern**:
   1. Guide the persona in the System Instruction to acknowledge the lookup naturally before emitting the tool call.
   2. Execute the tool asynchronously in the background via `asyncio.create_task(...)`.
-  3. Send `tool_response` (`FunctionResponse`) with `scheduling="WHEN_IDLE"` over the live WebSocket upon completion so the tool result is voiced as soon as the current filler audio finishes without clipping the model's sentence.
+  3. Send `FunctionResponse` via `await session.send_tool_response(function_responses=[...])` with `scheduling=types.FunctionResponseScheduling.WHEN_IDLE` upon completion so the tool result is voiced as soon as the current filler audio finishes without clipping the model's sentence.
 
 ### D. Tool Response Scheduling Protocol (`WHEN_IDLE` vs. `SILENT` vs. `INTERRUPT`)
+* **`NON_BLOCKING` Requirement**: Per `google.genai.types.FunctionResponseScheduling`, `scheduling` applies **only** to `NON_BLOCKING` function declarations (and is ignored on blocking tool calls; note that `gemini-3.8-live-extended-thinking` schedules background reasoning autonomously).
 * **`WHEN_IDLE` (Default for User-Facing Lookups)**: Queues the tool result until the model finishes speaking its current filler sentence, then immediately generates the spoken answer.
 * **`SILENT` (For Background State Sync Only)**: Absorbs the tool payload into session context without generating new speech.
-  - **Caution on Gemini 3.1 Flash Live**: If the model speaks a filler sentence (*"One moment while I check..."*), finishes its turn (`turnComplete`), and then receives a `FunctionResponse` with `scheduling="SILENT"`, the model will remain silent until the user speaks again. Always use `WHEN_IDLE` whenever the caller expects an immediate spoken answer after a filler phrase.
+  - **Caution on `gemini-3.8-live`**: If the model speaks a filler sentence (*"One moment while I check..."*), finishes its turn (`turnComplete`), and then receives a `FunctionResponse` with `scheduling="SILENT"`, the model will remain silent until the user speaks again. Always use `WHEN_IDLE` whenever the caller expects an immediate spoken answer after a filler phrase.
 ```python
-func_response = types.FunctionResponse(
-    id=function_id,
-    name=function_name,
-    response=result_payload,
-    scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
+await session.send_tool_response(
+    function_responses=[
+        types.FunctionResponse(
+            id=function_id,
+            name=function_name,
+            response=result_payload,
+            scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
+        )
+    ]
 )
 ```
 
-### E. Pipecat `AntiCancel` Tool Shield, 8.0s Watchdog & Terminal `speaking_Hold`
-When a user coughs or says *"okay"* while an asynchronous tool call (such as an order lookup or appointment booking) is in flight, Pipecat's default interruption handler cancels the running `asyncio` task, dropping the API write mid-flight. Protect tool execution with three guards:
-1. **Override `_cancel_function_call(self, function_name: str | None)`**: Log `[AntiCancel] Refusing to cancel in-flight function call` and return cleanly without cancelling the background `asyncio.Task`.
-2. **Frame Interception with 8.0s Watchdog (`process_frame`)**: While `_tools_in_flight()` is active (`_active_tools_in_flight > 0` within `TOOL_LOCK_MAX_HOLD_SECS = 8.0s`), suppress `InterruptionFrame`, `UserStartedSpeakingFrame`, and `FunctionCallCancelFrame`. **Never suppress `CancelFrame`** (the pipeline disconnect/shutdown signal, or containers will leak on disconnect).
+### E. Asyncio Tool Cancellation Shield, 8.0s Watchdog & Terminal Playout Hold
+When a user coughs or says *"okay"* while an asynchronous tool call (such as an order lookup or appointment booking) is in flight, naive interruption handlers cancel running `asyncio` tasks or receive `tool_call_cancellation` events and drop the backend API write mid-flight. Protect tool execution with three guards:
+1. **Shield Side-Effecting Tasks (`asyncio.shield`)**: Wrap transactional writes (`create_booking`, `submit_order`) in `asyncio.shield(...)` and ignore `message.tool_call_cancellation` for idempotent write tools already committed to your backend, while allowing read-only search cancellations when superseded by a newer query.
+2. **Barge-In Hold Window with an 8.0s Watchdog**: While an essential transactional tool is in flight (bounded by `TOOL_LOCK_MAX_HOLD_SECS = 8.0`), suppress transient cough/backchannel interruptions from aborting the pending tool handler, while still honoring hard WebSocket disconnect / session teardown signals immediately so containers never leak on hangup.
 3. **Client-Side `speaking_Hold` During Terminal Actions (`transfer_call` / `end_call`)**: When the model invokes a terminal tool while speaking a farewell (*"Please hold while I connect you to a specialist..."*), do not tear down the audio stream while farewell speech is still buffered in the browser. Enter a client-side `speaking_Hold` state: pause mic forwarding (`send_realtime_input`), wait for the client to emit `playback_drained` once the `AudioWorklet` ring buffer empties, and only then execute the handoff or hangup.
 
 ### F. The `CallSlots` Server-State Tool Handler Pattern (Eliminating the 3-Part Tool Token Tax)
-On Gemini 3.1 Flash Live, `LiveConnectConfig.tools` schemas and tool-call responses in session history are re-billed on **every subsequent turn**. To prevent a multi-tool workflow from adding `2,000+` tokens/turn and `4,800+` tokens of tool-response history bloat:
+On Gemini 3.8 Live (`gemini-3.8-live` and `gemini-3.8-live-extended-thinking`), `LiveConnectConfig.tools` schemas and tool-call responses in session history are re-billed on **every subsequent turn**. To prevent a multi-tool workflow from adding `2,000+` tokens/turn and `4,800+` tokens of tool-response history bloat:
 
 1. **Never Auto-Inject Tool Lists (`live_tool_names`) into `system_instruction`**:
    - Tool declarations belong exclusively in `LiveConnectConfig.tools`. Auto-generating an `"Available Live API Tools"` directory into `system_instruction` duplicates billing by **`+650 to 800 tokens/turn`**. Set `live_tool_names=None`.
@@ -410,7 +388,7 @@ class PhaseDefinition:
 ```
 
 1. **Tier 1 (Instant 0ms Fast-Path)**: Regex evaluation on transcribed user sentences for high-confidence explicit intents (`$0` cost, `0ms` latency).
-2. **Tier 2 (Async Background LLM Classifier)**: Non-blocking semantic classification using `gemini-2.5-flash-lite` when Tier 1 finds no match.
+2. **Tier 2 (Async Background LLM Classifier)**: Non-blocking semantic classification using `gemini-3.8-flash` (with minimal thinking) or `gemini-2.5-flash-lite` when Tier 1 finds no match.
 3. **Hysteresis & Confidence Gate**: Only transition states if `confidence >= 0.70` and the target phase transition is valid.
 
 ### C. JIT Prompt Yielding (`clientContent`) & Mid-Speech Collision Invariant
@@ -522,8 +500,8 @@ When scaling a voice platform across many raw Markdown domain files (`SKILL.md` 
 ## 12. Dual-Brain Frontcar / Downcar Architecture & Enterprise Memory Bank
 
 ### A. Frontcar vs. Downcar Decoupling
-* **Frontcar (Fast Path - Synchronous Duplex Voice)**: Ultra-lean real-time pipeline (`gemini-3.8-live`, `gemini-3.1-flash-live-preview`, or `gemini-live-2.5-flash-native-audio`) focused on conversational persona, audio pacing, active phase intent, and non-blocking tool execution. At session connect (`t = 0ms`), inject the user's compact profile (`< 100 to 500` tokens) directly into `Session State JSON` in `system_instruction`. Never declare a live `recall_memory` or `fetch_customer_history` tool for CRM or prior-call facts already known when the call connects: every declared tool schema is billed on every turn on 3.x Live models (§13.G), and calling a memory tool on Turn 1 adds an unnecessary tool round-trip of dead air. Zero heavy database writes occur on the audio thread.
-* **Downcar (Slow Path - Asynchronous Post-Session Worker)**: Triggered on `on_client_disconnected`. Uses `gemini-2.5-flash-lite` (`response_mime_type="application/json"`) to parse session transcripts, extract canonical user facts and action items, generate episodic summaries, and persist them to your cloud memory store.
+* **Frontcar (Fast Path - Synchronous Duplex Voice)**: Ultra-lean real-time pipeline (`gemini-3.8-live` or `gemini-3.8-live-extended-thinking`) focused on conversational persona, audio pacing, active phase intent, and non-blocking tool execution. At session connect (`t = 0ms`), inject the user's compact profile (`< 100 to 500` tokens) directly into `Session State JSON` in `system_instruction`. Never declare a live `recall_memory` or `fetch_customer_history` tool for CRM or prior-call facts already known when the call connects: every declared tool schema is billed on every turn on 3.x Live models (§13.G), and calling a memory tool on Turn 1 adds an unnecessary tool round-trip of dead air. Zero heavy database writes occur on the audio thread.
+* **Downcar (Slow Path - Asynchronous Post-Session Worker)**: Triggered on client disconnect. Uses `gemini-3.8-flash` or `gemini-2.5-flash-lite` (`response_mime_type="application/json"`) to parse session transcripts, extract canonical user facts and action items, generate episodic summaries, and persist them to your cloud memory store.
 
 ### B. Dual-Threshold Vector Memory Standard
 * **Deduplication Gate (`SIMILARITY_THRESHOLD = 0.83`)**: Enforce `cosine_similarity >= 0.83` (plus category match and MD5 `content_hash`) when updating or inserting memory facts so distinct concepts never overwrite each other.
@@ -538,11 +516,12 @@ Standardize spoken introductions by stripping conversational framing (*"My name 
 ## 13. Token Modality, Cost Accounting & Context Compression Architecture
 
 ### A. Published Rate Card (Vertex AI & Google AI Studio)
-| Token Category | Gemini 2.5 Flash Native Audio (per 1M Tokens) | Gemini 3.1 Flash Live Preview (per 1M Tokens) | Modality & Billing Mechanics |
+| Token Category | Gemini 3.8 Live & 3.8 Extended Thinking (per 1M Tokens) | Legacy Gemini 2.5 Native Audio (per 1M Tokens) | Modality & Billing Mechanics |
 |---|---:|---:|---|
-| **Prompt TEXT** | `$0.50` | `$0.75` | System instructions, tool declarations (on 3.1 Live), text turns, and tool responses |
+| **Prompt TEXT** | `$0.75` | `$0.50` | System instructions, declared tool schemas (on 3.x Live), text turns, and tool responses |
 | **Prompt AUDIO** | `$3.00` | `$3.00` | `~25 tokens/sec` (`~1,500 tok/min`; budget `~27.8 tok/sec` / `~1,668 tok/min` / `~$0.0050/min` as a conservative planning figure; includes both user speech **and** carried played model audio) |
-| **Candidate TEXT / Thoughts** | `$2.00` | `$4.50` | Output text transcripts and thinking tokens (`thoughts_token_count`) |
+| **Prompt IMAGE / VIDEO** | `$1.00` | `$3.00` | `~$0.002/min` at 1 fps on Gemini 3.x Live (retiring `3.1 Preview` shared the 3.8 rate card) |
+| **Candidate TEXT / Thoughts** | `$4.50` | `$2.00` | Output text transcripts and thinking tokens (`thoughts_token_count`) |
 | **Candidate AUDIO** | `$12.00` | `$12.00` | `~25 tokens/sec` of generated model speech (`~1,500 tokens/min` = `$0.018/min`) |
 
 ### B. Dual-Engine Optimization Architecture: 5,000-Token Trigger Floor vs. Lean SI & JIT Prompt Cards
@@ -553,7 +532,7 @@ Standardize spoken introductions by stripping conversational framing (*"My name 
 * **The Dual-Engine Solution**:
   1. **Early Turns (Lean Static SI + Dynamic JIT Prompt Cards)**:
      - Keep the root SI under `500` tokens (`120` tokens for the opening card, `~500` tokens average across phases).
-     - Yield Phase Directives and compliance scripts Just-In-Time as a system-instruction update (`role="system"`, or `context_update` on Vertex AI `gemini-3.8-live`) only when entering a new conversation phase, so each card replaces the last one.
+     - Yield Phase Directives and compliance scripts Just-In-Time as a system-instruction update (`session.send_context_update(system_instruction=...)` in `google-genai >= 2.32.0`, or `role="system"` client content on Vertex AI) only when entering a new conversation phase, so each card replaces the last one.
      - Never stuff static multi-page decision trees or unused tool schemas into the root SI.
   2. **Long Calls (Sliding-Window Compression `5000 / 3500` + `FactStore`)**:
      - Once total context reaches `5,000` tokens, `SlidingWindow(target_tokens=3500)` automatically evicts the oldest dialogue turns (including their accumulated user and model audio tokens) while preserving the initial `system_instruction`.
@@ -605,7 +584,7 @@ Standardize spoken introductions by stripping conversational framing (*"My name 
   3. **At Client Disconnect**: In `on_client_disconnected`, emit the numbered session transcript (`1. User: ...`, `2. Assistant: ...`).
 
 ### F. Audio vs. Text Token Dynamics & Compression Alert Guarding
-* **Composite Prompt Tokens**: On Vertex AI, `prompt_token_count` equals `Prompt_TEXT + Prompt_AUDIO` (`residual = 0`). On Google AI Studio (`gemini-3.1-flash-live-preview`), `prompt_token_count` exceeds `Prompt_TEXT + Prompt_AUDIO` by `93 to 221` tokens per turn (see §13.H). Never compute billed volume by summing `prompt_tokens_details` alone; always read `prompt_token_count` and bill any positive difference `max(0, prompt_token_count - sum(details))` at the text input rate.
+* **Composite Prompt Tokens**: On Vertex AI, `prompt_token_count` equals `Prompt_TEXT + Prompt_AUDIO` (`residual = 0`). On historical Google AI Studio preview traces (`gemini-3.1-flash-live-preview`), `prompt_token_count` exceeded `Prompt_TEXT + Prompt_AUDIO` by `93 to 221` tokens per turn (see §13.H). Never compute billed volume by summing `prompt_tokens_details` alone; always read `prompt_token_count` and bill any positive difference `max(0, prompt_token_count - sum(details))` at the text input rate.
 * **Guard Observability Alerts**: Configure monitoring dashboards so context-compression alerts only fire when `prompt_token_count` crosses `>= 4,500` tokens followed by a sustained drop (`> 1,000` tokens).
 
 ### G. Tool Declaration & Tool Response Token Accounting (`Prompt TEXT`)
@@ -615,9 +594,9 @@ Standardize spoken introductions by stripping conversational framing (*"My name 
 
 ### H. Cross-Endpoint `usage_metadata` Reconciliation Invariant (Vertex AI vs. AI Studio)
 
-Paired multi-turn sessions on identical Pipecat clients and prompts establish exact reconciliation behaviors across endpoints:
+Paired multi-turn sessions on identical `google-genai` clients and prompts establish exact reconciliation behaviors across endpoints:
 
-1. **Google AI Studio (`gemini-3.1-flash-live-preview`) Unattributed `Prompt` Residual**:
+1. **Google AI Studio (measured on historical `gemini-3.1-flash-live-preview`) Unattributed `Prompt` Residual**:
    ```text
    T0 (greeting): Prompt: 795  (TEXT 501, AUDIO 201)  -> details sum 702   residual  93
    T1           : Prompt: 1091 (TEXT 538, AUDIO 418)  -> details sum 956   residual 135
@@ -627,14 +606,14 @@ Paired multi-turn sessions on identical Pipecat clients and prompts establish ex
    ```
    - On AI Studio, `response_tokens_details` reports `AUDIO` only (`0 TEXT` out), while `prompt_token_count` includes internal turn formatting and the carried output text transcript that are not broken out in `prompt_tokens_details`.
    - AI Studio also sets `total_token_count = prompt_token_count + response_token_count`, omitting `thoughts_token_count` from `total_token_count` even when `thoughts_token_count` is populated.
-2. **Vertex AI (`gemini-live-2.5-flash-native-audio`) Zero Residual**:
+2. **Vertex AI (`residual = 0`)**:
    - On Vertex AI, `prompt_token_count == Prompt_TEXT + Prompt_AUDIO` (`residual = 0` on every turn), `response_tokens_details` explicitly breaks out both `AUDIO` and `TEXT`, and `total_token_count == prompt_token_count + response_token_count + thoughts_token_count`.
 3. **Cost-Calculator Invariant**:
    - Any Live pricing module must compute `residual_input = max(0, prompt_token_count - sum(prompt_tokens_details))` and include `thoughts_token_count` explicitly when computing total turn cost.
 
-### I. Pre-Speech Greeting Audio Metering on AI Studio (`gemini-3.1-flash-live-preview`)
+### I. Pre-Speech Greeting Audio Metering When the Mic Opens Early
 
-On Google AI Studio, `gemini-3.1-flash-live-preview` bills **`~196 to 201` audio prompt tokens on Turn 1 before the user has spoken** if the client microphone stream is already open during the bot's greeting playback:
+In historical Google AI Studio traces (`gemini-3.1-flash-live-preview`), streaming open-microphone silence during the bot's opening greeting billed **`~196 to 201` audio prompt tokens on Turn 1 before the user spoke**:
 
 ```text
 05:58:48.8  WebSocket connected (mic streaming silence)
@@ -644,22 +623,22 @@ On Google AI Studio, `gemini-3.1-flash-live-preview` bills **`~196 to 201` audio
 
 Because the Live API re-bills active context on every subsequent turn, those `201` Turn-1 silence tokens compound to **`804+` extra audio tokens over 4 turns**.
 
-* **Mitigation**: Gate client microphone forwarding until `TTSStoppedFrame` (or client greeting playback drain) fires on Turn 1. When Turn 1 is triggered cleanly without open-mic audio before the greeting completes, Turn 1 `Prompt AUDIO` is `0`.
+* **Mitigation (Recommended on All Models Including `gemini-3.8-live`)**: Gate client microphone forwarding until greeting playback drains (or gate Turn 0 behind a `200ms` pre-buffer + `RMS > 650` speech gate, §16.G). When Turn 1 is triggered cleanly without open-mic audio before the greeting completes, Turn 1 `Prompt AUDIO` is `0`.
 
 ### J. Zero Implicit Context Caching Discount (`cached_content_token_count = 0`)
 
-Across all production Gemini Live endpoints (`gemini-live-2.5-flash-native-audio` on Vertex AI and `gemini-3.1-flash-live-preview` on Google AI Studio), `cached_content_token_count` is **`0` (`None`) on every turn**. System instructions, declared tool schemas (on 3.1 Live), and carried conversation history in the active window are billed at standard input rates on every turn:
+Across Gemini Live endpoints, `cached_content_token_count` in `usage_metadata` is **`0` (`None`) on every turn**. System instructions, declared tool schemas (on 3.x Live), and carried conversation history in the active window are billed at standard input rates on every turn:
 
-| Model | Turn 1 `Prompt TEXT` for an Identical 225-Token System Instruction (0 Tools) |
+| Model Generation | Turn 1 `Prompt TEXT` for an Identical 225-Token System Instruction (0 Tools) |
 |---|---|
-| `gemini-live-2.5-flash-native-audio` | **225 tokens** (the system instruction with zero extra scaffolding) |
-| `gemini-3.1-flash-live-preview` | **501 tokens** (225 instruction + 276 model preamble scaffolding) |
+| `gemini-live-2.5-flash-native-audio` (legacy) | **225 tokens** (the system instruction with zero extra scaffolding) |
+| `gemini-3.x` Live (`3.8-live` / historical `3.1`) | **~501 tokens** (225 instruction + model preamble scaffolding) |
 
-What can look at first glance like "2.5 caching the system prompt" is actually `2.5-flash-native-audio` having a smaller fixed preamble (`225` vs. `501` tokens) and omitting tool schemas from `prompt_token_count`. Both models re-bill their active context window on every turn (`~2.9x` cumulative re-bill amplification over 4 to 5 turns).
+What can look at first glance like "2.5 caching the system prompt" is actually `2.5-flash-native-audio` having a smaller fixed preamble (`225` vs. `~501` tokens) and omitting tool schemas from `prompt_token_count`. All Live models re-bill their active context window on every turn (`~2.9x` cumulative re-bill amplification over 4 to 5 turns).
 
 ### K. Thinking Token Accounting (`thoughts_token_count`)
-* On `gemini-live-2.5-flash-native-audio` with `thinking_budget=0` and `gemini-3.1-flash-live-preview` with `ThinkingLevel.MINIMAL` (`include_thoughts=False`), `thoughts_token_count` is `0` (`None`) on standard conversational turns.
-* Always keep `thinking_level="MINIMAL"` and `include_thoughts=False` on 3.1 Live for real-time voice agents; higher thinking levels (`LOW`, `MEDIUM`, or `HIGH`) add both turn latency and output-rate thinking token spend (`$4.50 / 1M`) across multi-turn calls.
+* On **`gemini-3.8-live`** (where `thinking_config` is omitted and thinking is fixed at minimal) and legacy `2.5` with `thinking_budget=0`, `thoughts_token_count` is `0` (`None`) on standard conversational turns.
+* On **`gemini-3.8-live-extended-thinking`**, reasoning tokens (`thoughts_token_count`) are billed at the `$4.50 / 1M` text output rate. Choose `thinking_level="low"` (with `include_thoughts=False` unless debugging) when you need background tool planning without paying the full latency and token cost of the default `"HIGH"` level; use `gemini-3.8-live` for standard low-latency voice agents.
 
 ### L. Parametric Per-Call Cost Model & Turn-by-Turn Calculator
 
@@ -673,7 +652,7 @@ def calculate_live_session_cost(
     user_sec_per_turn: float = 4.0,
     bot_sec_per_turn: float = 6.0,
     barge_in_play_ratio: float = 1.0,
-    model: str = "gemini-3.1-flash-live-preview",
+    model: str = "gemini-3.8-live",
     sliding_window_trigger: int = 5000,
     sliding_window_target: int = 3500,
 ) -> dict:
@@ -690,8 +669,8 @@ def calculate_live_session_cost(
         thoughts_per_turn = 0
     else:
         r_txt_in, r_txt_out, r_aud_in, r_aud_out = 0.75, 4.50, 3.00, 12.00
-        base_txt = si_tokens + 276 + tool_tokens  # 3.1 adds +276 preamble scaffolding
-        thoughts_per_turn = 0  # 0 with ThinkingLevel.MINIMAL
+        base_txt = si_tokens + 276 + tool_tokens  # 3.x preamble + active tool schemas
+        thoughts_per_turn = 0  # 0 on gemini-3.8-live; >0 on gemini-3.8-live-extended-thinking
 
     cum_txt_in = 0
     cum_aud_in = 0
@@ -771,20 +750,20 @@ When a user interrupts the bot mid-speech (`server_content.interrupted == True`)
      ```
 3. **Golden Rule of Interruption**:
    - **Decisive Interruption (Saves Money)**: Caller cuts off an unwanted explanation and pivots directly to the next step (*"Skip that, book the 10 AM slot"*), replacing a turn and truncating carried bot audio.
-   - **Fragmented False Barge-In (Burns Money)**: Coughs or backchannel fillers (`"uh-huh"`) split one turn into two, re-billing the entire context history. Tune `StartSensitivity.START_SENSITIVITY_LOW` and `SileroVADAnalyzer(confidence=0.7, start_secs=0.2)` to filter out non-speech bursts.
+   - **Fragmented False Barge-In (Burns Money)**: Coughs or backchannel fillers (`"uh-huh"`) split one turn into two, re-billing the entire context history. Tune `StartSensitivity.START_SENSITIVITY_LOW` on noisy lines and optional local Silero VAD (`confidence=0.7`, `start_secs=0.2`) to filter out non-speech bursts.
 
-### O. Model Comparison & Production Decision Matrix (`2.5 Native Audio` vs. `3.1 Flash Live`)
+### O. Model Comparison & Production Decision Matrix (`3.8 Live` vs. `3.8 Extended Thinking` vs. Legacy `2.5`)
 
-| Dimension | `gemini-live-2.5-flash-native-audio` (GA) | `gemini-3.1-flash-live-preview` (Preview) |
-|---|---|---|
-| **Deployment Endpoints** | Vertex AI (`us-central1`, `v1beta1`) | Google AI Studio (`v1alpha` / `v1beta`) |
-| **Pricing Rates (In / Out)** | Text: `$0.50` / `$2.00`, Audio: `$3.00` / `$12.00` | Text: `$0.75` / `$4.50`, Audio: `$3.00` / `$12.00` |
-| **Fixed Prompt Scaffolding (T0)** | `225` tokens (0 extra preamble scaffolding) | `501` tokens (`+276` model preamble scaffolding) |
-| **Tool Schema & Response Accounting** | `0` billed tokens for static `function_declarations`; bills `FunctionResponse` payloads in history | Bills `+276` preamble tokens, all declared `tools` schemas, and every `FunctionResponse` payload in history on every turn (`CallSlots` pruning required) |
-| **Thinking Configuration** | `ThinkingConfig(thinking_budget=0)` | `ThinkingConfig(thinking_level="MINIMAL")` (never pass `thinking_budget=0`) |
-| **Proactive Audio & Affective Dialog** | Supported (`proactive_audio=True`, `enable_affective_dialog=True`) | Unsupported (causes `1007` handshake error if set) |
-| **Usage Metadata Reconciliation** | 100% exact (`residual = 0` on every turn) | `93 to 221 tok/turn` unattributed residual on AI Studio (`prompt_token_count - sum(details)`) |
-| **Ideal Use Case** | Cost-sensitive high-volume voice bots and affective dialogue | Low-latency multi-step reasoning, expressive multilingual voice agents, and dynamic tool workflows |
+| Dimension | `gemini-3.8-live` (Default GA) | `gemini-3.8-live-extended-thinking` (Reasoning GA) | `gemini-live-2.5-flash-native-audio` (Legacy, retires Dec 13, 2026) |
+|---|---|---|---|
+| **Deployment Endpoints** | Vertex AI & Gemini Developer API (`v1beta` / `v1beta1`) | Vertex AI & Gemini Developer API (`v1beta` / `v1beta1`) | Vertex AI (`v1beta1`; preview `2.5` & `3.1` shut down Nov 17, 2026) |
+| **Pricing Rates (In / Out)** | Text `$0.75`/`$4.50`, Audio `$3.00`/`$12.00`, Video `$1.00` in | Text `$0.75`/`$4.50` (incl. thoughts), Audio `$3.00`/`$12.00`, Video `$1.00` in | Text `$0.50`/`$2.00`, Audio `$3.00`/`$12.00`, Video `$3.00` in |
+| **Thinking Configuration** | Fixed at minimal; **omit `thinking_config`** | `ThinkingConfig(thinking_level="low" \| "medium" \| "high")` (defaults to `"high"`) | `ThinkingConfig(thinking_budget=0)` |
+| **Async Function Calling** | Both synchronous and `NON_BLOCKING` supported | **`NON_BLOCKING` required** on all custom tools; track `interaction_status == "IDLE"` | Both synchronous and `NON_BLOCKING` supported |
+| **Mid-Session Context Update** | `session.send_context_update(system_instruction=..., tools=...)` (`google-genai >= 2.32.0`) | `session.send_context_update(system_instruction=..., tools=...)` | Rejects `contextUpdate` with `1007` (use `role="system"` client content) |
+| **Proactive Audio & Affective Dialog** | Both supported (`proactive_audio=True`, `enable_affective_dialog=True`) | Both supported | Both supported (retiring `3.1` did not support either) |
+| **Turn Coverage Default** | `TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO` | `TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO` | `TURN_INCLUDES_ONLY_ACTIVITY` |
+| **Ideal Use Case** | Default low-latency conversational voice agents and telephony | Multi-step planning, complex policy reasoning, and background tool workflows | Legacy deployments migrating to `gemini-3.8-live` |
 
 ### P. Enterprise Voice Agent Design Principles
 
@@ -796,7 +775,7 @@ When a user interrupts the bot mid-speech (`server_content.interrupted == True`)
    - Never rely on the voice model to call a `get_phase_card` or `track_progress` tool just to update the browser UI.
    - Run server-side regex and async Flash-Lite transcription tracking (`PhaseTracker`) on incoming user transcripts for **`0ms` voice latency, `$0` Live tool token overhead, and deterministic UI state updates**.
 4. **Gate the Microphone on Turn 1**:
-   - Keep client mic audio gated until the opening greeting finishes playing (`TTSStoppedFrame`) so ambient room noise during the greeting is never metered into Turn 1 `Prompt AUDIO`.
+   - Keep client mic audio gated until the opening greeting finishes playing (or gate behind `RMS > 650`, §16.G) so ambient room noise during the greeting is never metered into Turn 1 `Prompt AUDIO`.
 
 ### Q. The Turn-0 Cold-Start Trap: Why Initial Tokens Ballooned to 1,254 (RCA & Guard Invariant)
 
@@ -843,7 +822,7 @@ Telemetry from the raw session trace revealed a 3-step chain reaction on Turn 0:
 1. **The `$12/1M` Output Audio Myth**: Generated bot speech (`$12.00/1M`) is billed only once on the turn it is emitted (~23% of total session cost), whereas carried `Prompt AUDIO` (`$3.00/1M`) is re-billed on every subsequent turn (~65% of uncompressed session cost).
 2. **Bidirectional Audio Accumulation (`Prompt AUDIO`)**: Both user speech and played bot output audio persist in `Prompt AUDIO` across turns until evicted by `SlidingWindow(5000/3500)` or truncated by barge-in.
 3. **The Interruption Tax Paradox**: Decisive barge-ins save money by truncating unplayed bot audio from both current output and future `Prompt AUDIO` history; fragmented false barge-ins (coughs, *"uh-huh"*) burn money by triggering a second full-window prompt evaluation (`+$0.00775`).
-4. **Zero Implicit Cache Discount (`cached_content_token_count = 0`)**: Neither Vertex AI nor AI Studio applies an implicit cache discount on Live sessions today. Keep root prompts compact (`~500` tok) and prune tool declarations on 3.1 Live.
+4. **Zero Implicit Cache Discount (`cached_content_token_count = 0`)**: Neither Vertex AI nor AI Studio reports an implicit cache discount in `usage_metadata` on Live sessions today. Keep root prompts compact (`~500` tok) and prune tool declarations per card (`send_context_update`) on `gemini-3.8-live`.
 5. **The Turn-0 Tool Hijack**: Autonomous models will call routing tools before speaking their greeting unless explicitly instructed to speak the opening line first without calling tools.
 6. **Funnel Telemetry Must Never Rely on Model Tool Choices**: Track funnel progression on the server using regex + async Flash-Lite classification over user transcripts (`0ms` latency, `$0` Live tool tokens).
 7. **Always Pair `SlidingWindow(5000/3500)` with a `<60-Token` `FactStore`**: Server-side sliding-window compression caps context size on long calls while `FactStore` + 10-turn transcript restoration prevents context amnesia across compaction boundaries.
@@ -864,19 +843,19 @@ Telemetry from the raw session trace revealed a 3-step chain reaction on Turn 0:
 ### A. Multi-Stage Dockerfile Pattern
 ```dockerfile
 # Stage 1: Build client
-FROM node:18-slim as client
+FROM node:22-slim AS client
 WORKDIR /app/client
 COPY client/package*.json ./
-RUN npm install
+RUN npm ci
 COPY client/ ./
 RUN npm run build
 
 # Stage 2: Build server
-FROM python:3.12 as server
+FROM python:3.12-slim AS server
 WORKDIR /app
-RUN apt-get update && apt-get install -y build-essential libjpeg-dev zlib1g-dev libsndfile1-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential libsndfile1-dev && rm -rf /var/lib/apt/lists/*
 COPY server/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && python -m spacy download en_core_web_sm
+RUN pip install --no-cache-dir -r requirements.txt
 COPY server/ .
 COPY --from=client /app/client/dist ./client/dist
 EXPOSE 7860
@@ -885,15 +864,14 @@ CMD ["python", "server.py"]
 ```
 
 ### B. Production Cloud Run Deployment Command
-Gemini Live sessions rely on stateful bidirectional WebSockets. Always deploy Cloud Run with `--timeout=3600`, `--session-affinity`, and `--no-cpu-throttling`:
+Gemini Live sessions rely on stateful bidirectional WebSockets. Always deploy Cloud Run with `--timeout=3600`, `--session-affinity`, `--no-cpu-throttling`, and IAM or gateway authentication (never expose an unauthenticated model-relaying WebSocket without verifying a short-lived user session JWT or Identity-Aware Proxy header on upgrade):
 ```bash
 gcloud run deploy gemini-live-agent \
   --source . \
   --platform managed \
   --region us-central1 \
   --project "${PROJECT_ID}" \
-  --ingress all \
-  --allow-unauthenticated \
+  --no-allow-unauthenticated \
   --session-affinity \
   --memory 2Gi \
   --cpu 2 \
@@ -904,9 +882,9 @@ gcloud run deploy gemini-live-agent \
   --concurrency 80 \
   --timeout 3600 \
   --service-account "gemini-live-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},GCP_LOCATION=us-central1,USE_VERTEXAI=true" \
-  --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest"
+  --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},GCP_LOCATION=us-central1,USE_VERTEXAI=true"
 ```
+*(If your public web or SIP ingress requires `--allow-unauthenticated` at the Cloud Run edge, validate a signed short-lived session token or carrier HMAC signature before opening the upstream Vertex AI WebSocket.)*
 
 ### C. Rollout Verification & Health Check Invariant
 Always verify the local test suite before triggering a Cloud Run build, and verify revision readiness after deployment:
@@ -917,25 +895,43 @@ gcloud run services describe gemini-live-agent --region us-central1 --format="va
 
 ---
 
-## 15. Branch-First Release Discipline
+## 15. Client-Side Security & Ephemeral Authentication Tokens
 
-1. **Canonical Repository Structure**: Keep all voice pipelines, server handlers, and frontend AudioWorklet clients in a single unified repository (`gemini-live/`).
-2. **Branch-First Rule**: Develop all new customer POCs and features on a dedicated branch off `main`:
-   ```bash
-   git checkout main && git pull origin main
-   git checkout -b feat/<project-or-feature-name>
+Never ship a raw `GEMINI_API_KEY` or long-lived service-account credential inside a browser bundle or mobile app. Choose one of two architectures:
+
+1. **Backend WebSocket / WebRTC Media Gateway (Recommended for Telephony, Enterprise IAM & Vertex AI)**:
+   - Browsers or SIP trunks authenticate to your Cloud Run gateway using your app's own session cookie/JWT, and the gateway opens the upstream `BidiGenerateContent` WebSocket using Vertex AI Application Default Credentials (`roles/aiplatform.user`).
+2. **Direct Browser-to-Gemini Connection via Ephemeral Tokens (Gemini Developer API)**:
+   - When connecting directly from a browser or mobile app to avoid an extra media proxy hop, mint a single-use, short-lived **ephemeral authentication token** on your backend using `client.auth_tokens.create(...)` (`http_options={'api_version': 'v1alpha'}`) and lock the model and session configuration server-side via `live_connect_constraints`:
+   ```python
+   import datetime
+   from google import genai
+   from google.genai import types
+
+   # Backend endpoint: mint a single-use token valid for 1 minute to start a 30-minute session
+   now = datetime.datetime.now(tz=datetime.timezone.utc)
+   server_client = genai.Client(http_options={"api_version": "v1alpha"})
+   ephemeral_token = server_client.auth_tokens.create(
+       config=types.CreateAuthTokenConfig(
+           uses=1,
+           new_session_expire_time=now + datetime.timedelta(minutes=1),
+           expire_time=now + datetime.timedelta(minutes=30),
+           live_connect_constraints=types.LiveConnectConstraints(
+               model="gemini-3.8-live",
+               config=types.LiveConnectConfig(
+                   response_modalities=["AUDIO"],
+                   system_instruction="You are a concise customer support voice assistant.",
+               ),
+           ),
+       )
+   )
+   # Return ephemeral_token.name to the authenticated browser/mobile client
    ```
-3. **Pre-Merge Test Gate**: Run your full test suite (`python -m pytest`, must pass 100%).
-4. **Clean Merge & Remote Cleanup**:
-   ```bash
-   git checkout main && git pull origin main
-   git merge <branch-name> --no-edit && git push origin main
-   git branch -d <branch-name> && git push origin --delete <branch-name>
-   ```
+   - On the client (`@google/genai`), pass `ephemeral_token.name` as `apiKey` with `httpOptions: { apiVersion: 'v1alpha' }`. Ephemeral tokens apply only to Live API WebSocket connections (`uses=1` consumes the token on handshake; if supporting `SessionResumptionConfig` reconnects across one token, increase `uses` accordingly).
 
 ---
 
-## 16. Frontend Audio Engineering, Constraints & Resilience
+## 16. Frontend Audio Engineering, Noise Isolation & Resilience
 
 ### A. Source-Level Hardware DSP & Web Audio Constraints
 Clean microphone audio at the source (browser Web Audio API) before sending frames over WebSocket or WebRTC:
@@ -973,25 +969,36 @@ const stream = await navigator.mediaDevices.getUserMedia({
 
 ### F. Direct `AudioContext.destination` Playback vs. `<audio srcObject={MediaStream}>` Turn-2 WebRTC Ducking
 * **Why Bot Voice Timbre Can Shift on Turn 2+ Over WebSocket Transports**:
-  - Client media wrappers built for WebRTC (such as `@pipecat-ai/daily-media-manager`) instantiate a WebRTC call object even when paired with raw `WebsocketTransport`, routing `24 kHz` WebAudio output through `createMediaStreamDestination()` into `<audio srcObject={MediaStream} autoPlay>`.
+  - Client media wrappers built for WebRTC often instantiate a WebRTC media-stream pipeline even when paired with a plain WebSocket transport, routing `24 kHz` WebAudio output through `createMediaStreamDestination()` into `<audio srcObject={MediaStream} autoPlay>`.
   - On Turn 1 (before caller speech), playback sounds natural. As soon as the caller speaks into an active `getUserMedia` microphone between Turn 1 and Turn 2, OS/browser WebRTC communication-mode audio processing (such as macOS `VoiceProcessingIO` and Chrome WebRTC ducking/AGC) engages on `<audio srcObject={MediaStream}>`, shifting voice EQ, warmth, and loudness from Turn 2 onward across both native Live and cascaded TTS pipelines.
   - In addition, some default client recorder worklets copy input channel 0 directly to `output[channel]` and append every recorded frame to an internal array without clearing it, causing speaker bleed and unbounded memory growth on long calls.
 * **Canonical Browser WebAudio Architecture**:
-  1. Play `24000 Hz` bot PCM directly to hardware output (`AudioBufferSourceNode -> GainNode -> audioContext.destination`) with a `40 ms` initial jitter cushion and immediate source teardown on `InterruptionFrame`, avoiding `<audio srcObject={MediaStream}>` for WebSocket sessions.
+  1. Play `24000 Hz` bot PCM directly to hardware output (`AudioBufferSourceNode -> GainNode -> audioContext.destination`) with a `40 ms` initial jitter cushion and immediate source teardown on barge-in, avoiding `<audio srcObject={MediaStream}>` for WebSocket sessions.
   2. Feed UI waveform visualizers from a separate side-chain (`GainNode -> AnalyserNode -> MediaStreamAudioDestinationNode`) that is never attached to an `<audio>` element.
   3. Capture `16000 Hz` mono `Int16` microphone PCM in a dedicated `AudioWorkletProcessor` with anti-aliased boxcar downsampling when hardware `sampleRate > 16000`, zero retained history arrays, and a muted `GainNode(0) -> destination` sink.
 
+### G. Five-Layer Noise, Crosstalk & Voice Isolation Stack
+Standard noise suppressors (WebAudio `noiseSuppression: true` and open-source **RNNoise** / `pyrnnoise`) attenuate stationary background hum (fans, AC, road rumble) because they preserve human voice frequencies (`300 Hz to 3,400 Hz`), which means **background human speech (crosstalk, TVs, call-center neighbors) passes straight through** into VAD and transcription. Separate stationary noise from human crosstalk across five layers:
+1. **Layer 1 (Capture DSP)**: Browser `getUserMedia` (`echoCancellation`, `noiseSuppression`, `autoGainControl`) or carrier-grade SIP echo cancellation (`8 kHz G.711` -> anti-aliased `16 kHz` upsampling).
+2. **Layer 2 (Turn-0 Pre-Speech Gate, `RMS > 650`)**: Hold audio forwarding at session start while buffering a rolling `200ms` (`10` x `20ms`) pre-roll window; open the gate only after **2 consecutive frames** exceed `RMS > 650` (about `-34 dBFS`), then flush the `200ms` pre-roll so the first syllable is preserved while room hum during greeting playout burns `0` audio tokens.
+3. **Layer 3 (Server-Side Voice Isolation vs. Denoising)**:
+   - **Stationary mechanical noise only**: Open-source **RNNoise** (`pyrnnoise` at `48 kHz` / `10ms` frames, `<1%` CPU) removes fan/traffic hum at zero license cost, though it does not strip competing human voices.
+   - **Competing background talkers / TV / call-center crosstalk**: Deploy a primary-speaker voice-isolation DSP filter on the server before VAD (for example **Krisp VIVA** `krisp-viva-tel-v2.kef` for `8 kHz`/`16 kHz` telephony or `krisp-viva-pro-v1.kef` for `16 kHz+` web audio, or equivalent primary-speaker isolation such as **ai-coustics**). Pin `OPENBLAS_NUM_THREADS=1`, `OMP_NUM_THREADS=1`, and `MKL_NUM_THREADS=1` in container startup when running C++/ONNX audio DSP inside multi-worker Python servers to avoid thread contention.
+4. **Layer 4 (Turn-Taking VAD)**: Use Gemini Live's native server VAD (`START_SENSITIVITY_LOW` on noisy lines) by default, or switch to `automatic_activity_detection.disabled=True` + local Silero VAD (`confidence=0.7`, `start_secs=0.2`) fed by the voice-isolated PCM stream when crosstalk would otherwise trigger false server barge-ins.
+5. **Layer 5 (Prompt & Proactivity Guardrails)**: Add the acoustic-filtering rule in `systemInstruction` (§18.E), optionally enable `proactivity={'proactive_audio': True}` on `gemini-3.8-live` so the model ignores non-directed side chatter, and run the 2-word backchannel recovery check (§19.C) on `interrupted` events.
+
 ---
 
-## 17. Turn Completion Truth (`onTurnComplete`) & Audio Debounce
+## 17. Turn Completion Truth (`onTurnComplete`), `interaction_status` & Audio Debounce
 
-There are three distinct "model finished" signals in a duplex WebSocket session. Conflating them causes cut-off sentences, premature timers, and race conditions:
+There are four distinct "model finished" signals in a duplex WebSocket session. Conflating them causes cut-off sentences, premature timers, and race conditions:
 
 | Signal | Definition | Firing Timing & Hazard |
 |---|---|---|
-| **Server `turnComplete`** | Server finished transmitting the turn following assumed real-time playback (`generationComplete` fires ~4x faster as soon as token synthesis ends). | Arrives after the server's assumed real-time playout (which can be many seconds after `generationComplete` on long replies), while client jitter buffers or telephony queues may still have a short tail playing out. Wait for client buffer drain before injecting `turnComplete: true` text. |
+| **Server `turnComplete`** | Server finished transmitting the spoken utterance following assumed real-time playback (`generationComplete` fires ~4x faster as soon as token synthesis ends). | Arrives after the server's assumed real-time playout, while client jitter buffers or telephony queues may still have a short tail playing out. On `gemini-3.8-live-extended-thinking`, background reasoning or async tool calls can still continue after `turnComplete`. |
+| **Server `sc.interaction_status == types.InteractionStatus.IDLE` (`3.8-live-extended-thinking`)** | `serverContent.interactionStatus` indicates all background reasoning, filler utterances, and asynchronous tool turns have finished (`"IN_PROGRESS"` while active). | On `gemini-3.8-live-extended-thinking`, do not rely on `turnComplete` alone to decide the session is idle; wait for `sc.interaction_status == types.InteractionStatus.IDLE`. |
 | **Client `isAiSpeaking = false`** | Zero active audio sources playing in the browser. | Unreliable on its own because brief network jitter between audio chunks causes momentary zero-source gaps. |
-| **Composite `onTurnComplete`** | Both `serverTurnDone === true` AND `activeSources.size === 0` after a 300ms drain debounce. | The **authoritative signal** that the model has completely finished speaking. |
+| **Composite `onTurnComplete`** | `serverTurnDone === true` (plus `serverContent.interactionStatus === "IDLE"` when using extended thinking) AND `activeSources.size === 0` after a 300ms drain debounce. | The **authoritative signal** that the model has completely finished speaking and playing out. |
 
 ### AI Speaking Debounce & Turn-Completion Implementation
 * **Immediate Start (0ms debounce)**: Fire `onAiSpeakingChange(true)` immediately when the first audio chunk arrives so UI visualizers react right away.
@@ -1022,52 +1029,41 @@ source.addEventListener('ended', () => {
 
 ---
 
-## 18. Prompt Optimization, Positional Prompt Anatomy & System Instruction Playbook
+## 18. Prompt Optimization, Prompt Ordering & System Instruction Playbook
 
-### A. Positional Prompt Anatomy (How the Model Prompt Is Constructed)
-In a Gemini Live session, `systemInstruction`, `tools`, conversation history, and dynamic context updates are not independent settings: they occupy **fixed positions** inside the model prompt on every inference pass. Understanding those positions explains both how strongly an update steers the current turn and whether it invalidates the prefix cache:
+### A. Session Context Ordering (Setup -> Rolling History -> Current Turn)
+Across every turn of a Gemini Live session, your setup configuration, rolling conversation history, and latest caller turn play distinct roles in both token billing and recency steering:
 
 ```text
-ROLE_SYSTEM:
-  1. <base spoken-dialog preamble>             <- Server-internal spoken dialog mode instructions
-  2. <voice reference embedding>               <- ~224-239 audio tokens for a prebuilt voice sample (or ~25 tokens/sec for a custom clip in replicatedVoiceConfig)
-
-ROLE_DEVELOPER:
-  3. <function declarations>                   <- setup.tools (serialized FIRST inside ROLE_DEVELOPER)
-  4. <developer instruction>                   <- setup.systemInstruction (maps to ROLE_DEVELOPER, after tools)
-------------------------------------------------- [Prefix Cache Boundary]
-ROLE_USER / ROLE_ASSISTANT:
-  5. <conversation history>                    <- Prior clientContent & realtimeInput turns (audio + transcripts;
-                                                  barge-in turns are truncated to only the audio the caller actually heard)
-
-ROLE_CONTEXT:
-  6. <time and location>                       <- Server-injected runtime metadata (from session timezone / location)
-
-ROLE_USER:
-  7. <current turn>                            <- Newest caller utterance (<audio> + transcript), then any
-                                                  toolCall and FunctionResponse that follow it in this turn
-
-ROLE_CONTEXT:
-  8. <server footer>                           <- Short server-side closing context (public clients cannot write it)
+1. Session Setup (Preserved Across SlidingWindow Eviction):
+   - speechConfig (voiceName + languageCode or replicatedVoiceConfig)
+   - setup.tools (active functionDeclarations; replaceable via send_context_update)
+   - setup.systemInstruction (base persona + active card + session state; replaceable via send_context_update)
+------------------------------------------------- [SlidingWindow Eviction Boundary]
+2. Rolling Conversation History (Trimmed at 5,000 -> 3,500 Tokens):
+   - Prior user & model turns (accumulated audio + transcripts; barge-in turns are truncated
+     to only the audio the caller actually heard before interrupting)
+3. Current Turn (Closest to Audio Generation):
+   - Newest caller audio/text, followed by any toolCall and FunctionResponse returned in this turn
 ```
 
-#### Four Architectural Consequences of This Layout
-1. **Why Public `systemInstruction` Lives in `ROLE_DEVELOPER` (After `tools`) and Why `speechConfig.languageCode` Governs Turn 1**:
-   True `ROLE_SYSTEM` is reserved for the server's spoken-dialog preamble and the `~224 to 239` audio hard tokens that encode the studio voice sample for `(voiceName, speechConfig.languageCode)` (or your custom `replicatedVoiceConfig` clip). Omitting `speechConfig.languageCode` on Vertex AI loads an `en-US` studio recording into `ROLE_SYSTEM`, which overrides prompt-only accent rules on Turn 1 before caller audio exists. Always set `speechConfig.languageCode` explicitly (such as `"en-IN"` or `"hi-IN"`) at setup. Your `setup.systemInstruction` is placed in `ROLE_DEVELOPER` immediately **after** `<function declarations>` (`setup.tools`). If you declare 15 to 20 heavy tool schemas, they sit ahead of your `systemInstruction` in `ROLE_DEVELOPER`, which is another reason to keep declared tools pruned to 1 to 5 active schemas (`CallSlots`).
+#### Four Architectural Consequences of This Ordering
+1. **Why `speechConfig.languageCode` Governs Turn-1 Accent and Why `tools` Should Stay Pruned**:
+   In tests on Vertex AI, omitting `speechConfig.languageCode` produced an `en-US` accent on Turn 1 even when `systemInstruction` asked for a regional accent, because Turn 1 has zero caller audio in history. Always set `speechConfig.languageCode` explicitly (such as `"en-IN"` or `"hi-IN"`) at setup. Likewise, every declared schema in `setup.tools` is re-billed on every turn (`1,326` tokens/turn across 6 booking tools in our benchmark), so keeping active tools pruned to 1 to 5 concise declarations (`CallSlots` + `send_context_update`) cuts per-turn token spend and keeps tool selection sharp.
 2. **The Newest Turn Is the Last Thing the Model Sees (Recency Steering)**:
-   Because `ROLE_DEVELOPER` (`tools` + `systemInstruction`) sits at the very top of the prompt, accumulated multi-turn audio and transcript history (`ROLE_USER / ROLE_ASSISTANT`) gradually separates your opening instructions from the caller's latest utterance. A tool result returned in the current turn lands at the end of the prompt, right before the model decodes audio, so it carries the most weight for the next reply. Use that slot for short per-turn reminders (a `<60-token` `call_state` line and a one-line `vocal_tone`, §18.M), not for whole phase cards: anything in history is billed again every turn and is lost when `SlidingWindow` trims it. Phase cards belong in `systemInstruction`, replaced in place (§22.C).
-3. **`systemInstruction` and `tools` Form the Prefix-Cached Preamble**:
-   Inside `ROLE_DEVELOPER`, `<function declarations>` (`tools`) are placed first, followed by `<developer instruction>` (`systemInstruction`). Because both sit in the preamble at the start of the token sequence, updating either one mid-session rebuilds the cached preamble from that point. Swap `tools` only when the card changes. A `systemInstruction` refresh that only updates session state costs the same rebuild, so send it when the card or a confirmed fact changes, not on turns where nothing changed.
-4. **Barge-In Truncates History to What the Caller Actually Heard & Session Resumption Uses Pre-Tokenized History**:
-   Only the Live server knows which streamed audio frames were endpointed into a turn and the exact playback timestamp where a user barged in (slicing unplayed bot audio chunks out of `ROLE_ASSISTANT` history and appending a trailing dash to the partial transcript so the model never assumes the caller heard the rest of an interrupted sentence). When using `SessionResumptionConfig`, the server resumes from pre-tokenized history chunks rather than re-tokenizing raw audio bytes.
+   Because `tools` and `systemInstruction` represent session-wide setup while conversation turns append over time, twenty turns of accumulated audio and transcript history eventually separate your opening instructions from the caller's latest utterance. A `FunctionResponse` returned in the current turn lands right before audio generation, carrying the strongest recency weight for the next spoken reply. Use that slot for short per-turn reminders (a `<60-token` `call_state` line and a one-line `vocal_tone`, §18.M), not for whole phase cards: anything in history is billed again every turn and is lost when `SlidingWindow` trims it. Phase cards belong in `systemInstruction`, replaced in place (§22.C).
+3. **Swap `systemInstruction` and `tools` Per Phase Transition, Not Per Turn**:
+   Each `send_context_update` re-sends the full session setup in place, while `SlidingWindow` preserves setup and trims only rolling history. Swap `tools` and `systemInstruction` when the card or a confirmed fact changes (`3 to 8 times` per call), not on turns where nothing changed.
+4. **Barge-In Truncates History to What the Caller Actually Heard & Session Resumption Preserves History**:
+   When a caller barges in mid-sentence, the Live server truncates unplayed model audio from session history so the model never assumes the caller heard the rest of an interrupted sentence. When reconnecting with `SessionResumptionConfig`, the server restores prior session context directly from the resumption handle.
 
-| Information Type | Where to Place It | Update Cadence | Prefix Cache Impact |
+| Information Type | Where to Place It | Update Cadence | Billing & Eviction Behavior |
 | :--- | :--- | :--- | :--- |
-| **Persona, vocal tone, speaking pace, and language/gender rules** | `setup.systemInstruction` (`ROLE_DEVELOPER`), plus a one-line `vocal_tone` in every tool result (§18.M) | Set once; repeated in every system-instruction update | Cached in preamble until the next card swap |
-| **Tool schemas (`functionDeclarations`)** | `setup.tools`, then only the current card's tools via `session.send_context_update(tools=[...])` (`google-genai >= 2.32.0`) | On card change (for example, `3 to 8 times` in a multi-step call) | Each swap rebuilds the cached preamble once |
-| **Active conversation phase rules (`Phase 2: KYC Verification`)** | Inside `systemInstruction`, replaced in place: `session.send_context_update(system_instruction="...")` (`google-genai >= 2.32.0`), or `clientContent` with `role="system"` on Vertex AI (§22.C) | On phase transition (for example, `3 to 8 times` in a multi-step call) | Each swap rebuilds the cached preamble once; history does not grow |
-| **Verified caller facts (`FactStore`: name, postal code, ticket ID)** | A `Session state` block inside the same system-instruction update, plus a `<60-token` `call_state` line in each tool result (§18.M) | Updated after key facts are captured | Rides with the card swap |
-| **Large reference catalogs or policy docs (`>1,000 tokens`)** | Behind a non-blocking lookup tool (`CallSlots` returning `~25-token` speakable summaries) | Fetched on demand | Zero static prompt tax |
+| **Persona, vocal tone, speaking pace, and language/gender rules** | `setup.systemInstruction`, plus a one-line `vocal_tone` in every tool result (§18.M) | Set once; repeated in every system-instruction update | Billed per turn; never evicted by `SlidingWindow` |
+| **Tool schemas (`functionDeclarations`)** | `setup.tools`, then only the current card's tools via `session.send_context_update(tools=[...])` (`google-genai >= 2.32.0`) | On card change (for example, `3 to 8 times` in a multi-step call) | Replaces active schema list in place; clears server cache once |
+| **Active conversation phase rules (`Phase 2: KYC Verification`)** | Inside `systemInstruction`, replaced in place: `session.send_context_update(system_instruction="...")` (`google-genai >= 2.32.0`), or `clientContent` with `role="system"` on Vertex AI (§22.C) | On phase transition (for example, `3 to 8 times` in a multi-step call) | Overwrites prior card in place; survives `SlidingWindow` |
+| **Verified caller facts (`FactStore`: name, postal code, ticket ID)** | A `Session state` block inside the same system-instruction update, plus a `<60-token` `call_state` line in each tool result (§18.M) | Updated after key facts are captured | Rides with the card swap; survives `SlidingWindow` |
+| **Large reference catalogs or policy docs (`>1,000 tokens`)** | Behind a lookup tool (`CallSlots` returning `~25-token` speakable summaries) | Fetched on demand | Zero static prompt tax |
 
 ### B. Pre-Connect Complete SI vs. Mid-Session Interruptions
 * A `sendClientContent` with `turn_complete=True` during an active generation turn interrupts model speech. A `turn_complete=False` update usually does not (14 of 16 measured runs), but it only takes effect from the next turn, so it cannot steer a reply already in flight.
@@ -1093,7 +1089,7 @@ ROLE_CONTEXT:
 ### E. Language Pinning, Accent Stability (`<60 words`) & Acoustic Noise Guardrails
 * Native audio models can code-switch when exposed to regional caller accents, coughs, or background office chatter.
 * **Pair `speechConfig.languageCode` with Positive Phrasing & Short Turns (`<60 words`)**:
-  - Always set `speechConfig.languageCode` (`"en-IN"`, `"hi-IN"`, `"mr-IN"`, `"ta-IN"`, `"te-IN"`) so `ROLE_SYSTEM` loads the regional studio voice sample (§2.D), and pair it with positive phrasing (`"RESPOND UNMISTAKABLY IN HINGLISH with a natural Indian accent on every word"`).
+  - Always set `speechConfig.languageCode` (`"en-IN"`, `"hi-IN"`, `"mr-IN"`, `"ta-IN"`, `"te-IN"`) so the regional voice preset is selected at setup (§2.D), and pair it with positive phrasing (`"RESPOND UNMISTAKABLY IN HINGLISH with a natural Indian accent on every word"`).
   - Cap every spoken response at **2 to 3 short sentences (`<60 words`)** so the audio decoder does not accelerate into a rushed read-aloud cadence or drift toward its US English pretraining prior on long explanations.
   - Write phonetic spellings for brand acronyms directly in place in Latin script (`"B-E six Sporteq"`) instead of pasting inline `"Pronounce X as Y"` tables or mixing scripts mid-word (`"BE 6 को 'बी-ई सिक्स' बोलें"`), which causes acoustic stumbling and literal readback.
 * Include explicit language-pinning and acoustic-filtering directives in every production System Instruction, with an explicit carve-out for English email/code spelling and untranslated proper nouns when the call language is non-English (see §18.J):
@@ -1115,7 +1111,7 @@ ROLE_CONTEXT:
 ### I. Structured Entity Intake on Phase Cards (Spelled Names, Codes, Digits & Self-Corrections)
 The prompt-card design patterns in §18.I and §18.J are distilled from production telephony prompt engineering (rather than separate A/B token benchmarks) to reduce common speech-to-tool capture errors when collecting passenger names, alphanumeric booking codes, phone numbers, or KYC identifiers (such as Card 5 and Card 6 in Cymbal Travel):
 * **Homophone Letter Pinning & Spanish `<letter> de <Word>` Anchors (Spelling Mode)**: When the caller spells a name or code (triggered by `"spelled"`, `"as in"`, `"se escribe"`, or 2+ consecutive spoken letter names), instruct the card to treat each standalone spoken letter name as a single letter rather than a homophone word (`"U"` instead of `"you"`, `"B"` instead of `"be"`, `"C"` instead of `"see"`, `"Y"` instead of `"why"`, or standalone Spanish `"a"`, `"y"`, `"de"`). Keep digit `"0"` (`"zero"`) distinct from letter `"O"`. When a letter is paired with an example word (`"<letter> as in <Word>"` in English such as `"B as in Bravo"` -> `"B"`, or `"<letter> de <Word>"` in Spanish such as `"ve de Valencia"` -> `"V"`), extract only the single target letter (`"V"`) and treat `"as in"` or `"de"` as the anchor connector rather than as a separate word or the letter `"D"`. On narrowband `8 kHz` telephone audio where consonant pairs sound similar (`B/V`, `M/N`, `F/S`, `P/T`), instruct the agent to ask for an example word (*"Was that B as in Bravo, or V as in Victor?"*) rather than guessing, and exit spelling mode as soon as the spelled sequence ends.
-* **Mid-Turn Self-Corrections (Full & Partial Fixes) and Digit-Run Continuity**: Callers can correct themselves mid-turn while spelling or reading digits (`"S-M-I-T-H, sorry, S-M-Y-T-H"`, a partial fix like `"S-M-I... sorry, Y-T-H"`, or `"9876... I mean 9875"`), or pause briefly mid-number to check a card (`"nine eight seven... six five four"`). Pair `silence_duration_ms` (`400ms to 800ms` in §19.A) with positive intake rules on the active phase card:
+* **Mid-Turn Self-Corrections (Full & Partial Fixes) and Digit-Run Continuity**: Callers can correct themselves mid-turn while spelling or reading digits (`"S-M-I-T-H, sorry, S-M-Y-T-H"`, a partial fix like `"S-M-I... sorry, Y-T-H"`, or `"9876... I mean 9875"`), or pause briefly mid-number to check a card (`"nine eight seven... six five four"`). Pair `silence_duration_ms` (`500ms to 800ms`, or `1200ms` on number-dictation steps in §19.A) with positive intake rules on the active phase card:
   ```text
   - If the caller replaces a spelled name, code, or number mid-turn ("sorry", "I mean", "no wait"), pass only the corrected sequence to the tool. If they correct only the ending letters or digits ("S-M-I... sorry, Y-T-H"), merge the fix into the earlier attempt ("SMYTH") and read the full value back to confirm before calling the tool.
   - Hold partial digit sequences across short breathing pauses until the full number is spoken, and preserve the exact spoken magnitude ("five thousand" = 5000).
@@ -1141,7 +1137,7 @@ Enable hardware/browser echo cancellation (`echoCancellation: true` in `getUserM
 ### L. Anti-Pattern Warning: Turn-0 `<one_time_elements>` Setup Tools & `"Remain Completely Silent"` Rules
 * **The `<one_time_elements>` Turn-0 Setup Trap**: Legacy telephony prompts sometimes wrap session initialization in a `<one_time_elements>` block that tells the model to invoke a setup or routing tool (`configure_session`, `init_state`, or `switch_phase`) on Turn 0 *before* speaking the opening greeting.
 * **Why It Hurts Gemini Live Sessions**:
-  1. **Extra Turn-0 Model Pass & Premature Card Injection**: Calling a setup tool (`configure_session`) before the greeting forces two model generation passes before the caller hears a word (one pass to emit the `function_call`, and a second pass after `FunctionResponse` to generate the spoken greeting), billing the `ROLE_DEVELOPER` preamble (`tools` + `systemInstruction`) on both passes. Worse, if the Turn-0 tool is a phase-transition or lookup tool (`switch_phase`), its synchronous handler injects the next phase card before the greeting is spoken. In measured production traces (§13.Q), a Turn-0 `switch_phase` call injected a `535`-token discovery card onto the `488`-token root prompt, jumping Turn 1 prompt text from `488` to `1,023` tokens (`1,254` total tokens once the `231`-token spoken greeting was added).
+  1. **Extra Turn-0 Model Pass & Premature Card Injection**: Calling a setup tool (`configure_session`) before the greeting forces two model generation passes before the caller hears a word (one pass to emit the `function_call`, and a second pass after `FunctionResponse` to generate the spoken greeting), billing the session preamble (`tools` + `systemInstruction`) on both passes. Worse, if the Turn-0 tool is a phase-transition or lookup tool (`switch_phase`), its synchronous handler injects the next phase card before the greeting is spoken. In measured production traces (§13.Q), a Turn-0 `switch_phase` call injected a `535`-token discovery card onto the `488`-token root prompt, jumping Turn 1 prompt text from `488` to `1,023` tokens (`1,254` total tokens once the `231`-token spoken greeting was added).
   2. **Estimated Pre-Greeting Dead Air (`~400ms to 800ms`, estimated)**: The caller waits through a tool-call generation pass, WebSocket round-trip, and second model pass before hearing `"Hello"`.
   3. **Permanent Preamble Tax**: Keeping a `<one_time_elements>` block (`~100 to 150` tokens) inside `setup.systemInstruction` re-bills those Turn-0-only instructions on every subsequent turn of the call.
   4. **The `"Remain Completely Silent"` Companion Trap**: Prompts that pair `<one_time_elements>` with rules to *"remain completely silent"* on noise or out-of-turn audio trigger the §18.G transcription trap (zero model audio output suppresses `inputAudioTranscription` for that turn).
@@ -1150,7 +1146,7 @@ Enable hardware/browser echo cancellation (`echoCancellation: true` in `getUserM
 ### M. `FunctionResponse` Payload Contract: Compact Fields, Speakable `*_say` Values & In-Band `vocal_tone`
 Tool results are the last thing the model reads before it generates audio, and they stay in history (billed on every later turn) until `SlidingWindow` trims them. Shape every result for both facts.
 
-* **Where a tool result lands**: The server builds the prompt top to bottom: the preamble (`tools` + `systemInstruction`), the history, then the latest turn (the newest caller utterance and everything after it, including the `FunctionResponse`), then a short server footer, and then the model decodes audio. After 3 to 4 audio turns, the system instruction is thousands of tokens above the decode point, while the newest tool result sits right next to it.
+* **Where a tool result lands**: Each turn presents the preamble (`tools` + `systemInstruction`), rolling history, and then the current turn (the newest caller utterance followed by any `toolCall` and `FunctionResponse`) right before speech generation. After 3 to 4 audio turns, `systemInstruction` is thousands of tokens above the generation point, while the newest tool result sits immediately before audio synthesis.
 * **Compact 3-field contract**: Push the full card through `context_update.systemInstruction` (overwrites in place, §22.C) and return only:
   - `call_state`: under 60 tokens of confirmed facts (`"Language: Hindi | Trip: one-way BLR to DEL ..."`).
   - `instruction`: one sentence on what to say or ask next.
@@ -1170,7 +1166,7 @@ Tool results are the last thing the model reads before it generates audio, and t
 * **Stop Redundant Tool Sweeps on Empty Lookups (`retryable: False`)**: When a search or directory lookup returns `[]` or `{}` without a terminal status, `gemini-3.8-live` frequently interprets the miss as a query-syntax mistake and fires 2 to 5 follow-up calls with shortened names or broader filters before speaking to the caller. Distinguish between **argument validation errors** (where the model should fix the named argument and retry once) and **valid lookups with zero matching records**: return `{"status": "no_results", "retryable": False, "matches": [], "ask_say": "...", "instruction": "No matching records exist. Tell the caller and ask for an alternative without calling this tool again."}`.
 
 ### N. Language-Neutral Turn-0 Greeting Stub & the `START` -> `IN_CALL` Swap
-* **Do not open the call with a word in any language.** A dummy `"Hello!"` or `"नमस्ते!"` user turn that makes the model speak first is risky on a multilingual agent: `"नमस्ते!"` reads as the caller choosing Hindi, so the model skips its introduction and calls the language tool on Turn 0. Because `GREETING_STUB` is a text-only Turn-1 trigger with zero caller audio in history, `ROLE_SYSTEM` is the sole acoustic reference on Turn 1: always set `speechConfig.languageCode` explicitly (for example `"en-IN"`) at setup so Turn 1 does not default to the `en-US` studio voice (§2.D).
+* **Do not open the call with a word in any language.** A dummy `"Hello!"` or `"नमस्ते!"` user turn that makes the model speak first is risky on a multilingual agent: `"नमस्ते!"` reads as the caller choosing Hindi, so the model skips its introduction and calls the language tool on Turn 0. Because `GREETING_STUB` is a text-only Turn-1 trigger with zero caller audio in history, `speechConfig` is the sole acoustic reference on Turn 1: always set `speechConfig.languageCode` explicitly (for example `"en-IN"`) at setup so Turn 1 does not default to the `en-US` voice preset (§2.D).
 * **Use a stage note plus an opening rule**:
   ```python
   GREETING_STUB = "(The call has connected. The caller has not spoken yet.)"
@@ -1200,9 +1196,9 @@ Tool results are the last thing the model reads before it generates audio, and t
 
 ### P. Five Production Audio & Sampling Traps (`gemini-3.8-live`)
 * **Greedy decoding (`temperature: 0` or `top_k: 1`) or low-temperature sampling (`temperature <= 0.3`) causes a ~20s droning audio loop**:
-  1. When a tool result contains a long formal string (such as a person's name plus a corporate title), the audio head finishes speaking the natural question in ~3 seconds with rising prosody while the text stream (`outputTranscription`) keeps flushing the remaining title words.
-  2. While those remaining text tokens flush, the audio head outputs 4 to 5 seconds of near-silence. Because the model's end-of-turn token (`<eos>`) depends on joint text-and-audio prediction, the model never emits `<eos>` when the text stream ends inside a silent audio window, so `turnComplete` never arrives.
-  3. Under greedy decoding (`temperature: 0.0` or `top_k: 1`), with no text tokens left to condition on, the audio head locks into a self-reinforcing nasal hum (*"Mmmmm..."*) near the voice's fundamental pitch (~187 to 200 Hz in one measured cloned-voice session) that grows louder for ~20 seconds until the server's turn-length cap cuts it off.
+  1. When a tool result contains a long formal string (such as a person's name plus a corporate title), the audio head finishes speaking the natural question in ~3 seconds with rising prosody while `outputTranscription` keeps flushing the remaining title words.
+  2. While those remaining text words flush over 4 to 5 seconds of near-silence, end-of-turn detection fails to fire inside the silent audio window, so `turnComplete` is delayed.
+  3. Under greedy decoding (`temperature: 0.0` or `top_k: 1`), with no text tokens left to condition on, the audio output locks into a self-reinforcing nasal hum (*"Mmmmm..."*) near the voice's fundamental pitch (~187 to 200 Hz in one observed cloned-voice session) that grows louder for ~20 seconds until the server's turn-length cap cuts it off.
   - **Mitigation**: Keep `temperature` unset (default `1.0`) or between `0.7` and `1.0`, leave `top_k` / `top_p` unset, and keep spoken `*_say` strings concise and conversational without long corporate titles or parenthetical codes.
 * **Never write "stay silent and wait" in a prompt**: When the model declines to answer, the server sends no `turnComplete` or reason, so the caller hears dead air. On 3.8, `<no speech>` placeholder text can leak into the output transcript and may be spoken after tool-response turns. This adds to the §18.G transcription trap. Use backchannel recovery (§19.C) or a short reprompt instead.
 * **Never wrap spoken lines in `<verbatim>` XML tags**: Under `<verbatim>...</verbatim>` readback prompts, `gemini-3.8-live` can dump the full text into the output transcript in 1 to 2 frames and send `generationComplete` after less than a second of audio, or none (28% of turns in one test). Put the line in a `*_say` field instead (§18.M).
@@ -1214,7 +1210,7 @@ Tool results are the last thing the model reads before it generates audio, and t
   - In text-replay harnesses (`send_client_content`), a synchronous pre-turn Python gate can call `send_context_update(system_instruction=..., tools=...)` *before* sending the text turn, achieving 0-turn lag on Turn `N`.
   - Under live microphone audio (`send_realtime_input`) with server-side VAD (`automatic_activity_detection.disabled=False`), the server closes the caller's audio turn and starts Turn `N` model generation **before** `input_transcription(finished=True)` arrives at the client. Calling `send_context_update` from an `input_transcription.finished` callback therefore lands *mid-generation*, so the updated card only takes effect from Turn `N+1` (a 1-turn lag that text-only replay hides) and risks ending an in-flight reply early (§22.C).
   - **Safe Production Rule**: Never fire `send_context_update` directly from `input_transcription.finished` when server VAD is active. Either (a) record the detected intent and flush `send_context_update` at `turnComplete` or inside a blocking `lookup_facts` tool handler while the model is paused waiting on the tool response (§22.C), or (b) run client-side VAD (`automatic_activity_detection.disabled=True` + Silero VAD + streaming ASR) so `send_context_update` lands *before* `send_activity_end`. Always validate voice routers with a PCM audio loopback harness (§25.A) in addition to text replay.
-* **Prefix-Cache-Safe `Session State JSON` (No Free-Text `phase_note` Strings)**:
+* **Deterministic `Session State JSON` (No Free-Text `phase_note` Strings)**:
   - Keep the dynamic `Session State JSON` inside `system_instruction` strictly deterministic and enum-bounded (`card_id`, `language`, `active_line`, `discovery_done`, `preferred_slot`). Avoid appending LLM-generated prose notes, wall-clock timestamps, or per-turn free-text summaries that change every turn and waste prompt tokens on every swap.
 * **Four Deterministic Router Traps in Multilingual Voice Flows**:
   1. **Silence / Nudge Turn Bypass**: Synthetic silence-reprompt triggers (`NUDGE_1..3`, `FINAL_NUDGE`, backchannel reprompts) must early-return before card-progression logic; otherwise Turn-2/Turn-3 nudges advance from Greeting to Discovery and pitch products to a silent line.
@@ -1226,34 +1222,42 @@ Tool results are the last thing the model reads before it generates audio, and t
 
 ## 19. Gemini Live API Turn Management & VAD Tuning (`RealtimeInputConfig`)
 
-Configure server-side turn detection and voice activity parameters within `LiveConnectConfig`:
+Configure server-side turn detection, stream-end flushing, and turn coverage within `LiveConnectConfig`:
 
-### A. `AutomaticActivityDetection` (Server-Side VAD)
-| Parameter | Recommended Production Setting | Rationale |
-|---|---|---|
-| `start_of_speech_sensitivity` | `START_SENSITIVITY_LOW` | Eliminates false barge-in triggers from background room noise, typing, or breathing. |
-| `end_of_speech_sensitivity` | `END_SENSITIVITY_LOW` | Allows natural mid-sentence pauses without prematurely cutting the caller off. |
-| `prefix_padding_ms` | `200` (keep `200` to `300`) | Required duration of detected speech before start-of-speech is committed. Lower values catch shorter sounds; `600` drops single spelled letters (§19.C). |
-| `silence_duration_ms` | `400` to `800` | Balances responsive turn-taking (`400ms` to `600ms`) with breathing room for thoughtful answers (`800ms`). |
-| `disabled` | `False` | Keep `False` unless implementing custom client-side activity framing (`activity_start` / `activity_end`). |
+### A. Unified `AutomaticActivityDetection` Baseline & Environment Decision Rule
+Server defaults differ by platform (`START_SENSITIVITY_HIGH` on the Gemini Developer API vs. `START_SENSITIVITY_LOW` on Vertex AI / Enterprise Agent Platform). Always set your VAD parameters explicitly so behavior stays identical across environments:
+
+| Parameter | Clean Web / Headset Baseline | Noisy Room / PSTN Telephony | Rationale |
+|---|---|---|---|
+| `start_of_speech_sensitivity` | `START_SENSITIVITY_HIGH` | `START_SENSITIVITY_LOW` | `HIGH` catches short `"Yes"`/`"No"` replies on clean close-talk mics; `LOW` rejects coughs, typing, road rumble, and speakerphone bleed. |
+| `end_of_speech_sensitivity` | `END_SENSITIVITY_LOW` | `END_SENSITIVITY_LOW` | Allows natural mid-sentence pauses without prematurely cutting the caller off. |
+| `prefix_padding_ms` | `200` (keep `200` to `300`) | `200` to `300` | Required speech duration before start-of-speech commits. `600` drops single spelled letters (§19.C). |
+| `silence_duration_ms` | `500` | `600` to `800` (`1200` for digit/code dictation) | Balances snappy turn-taking (`500ms` clean mic) with pause tolerance on phone trunks (`600ms to 800ms`) and credit-card / phone dictation (`1200ms`). |
+| `disabled` | `False` | `False` (or `True` with local voice-isolated Silero VAD, §16.G) | Keep `False` unless sending manual `activity_start` / `activity_end` signals. |
 
 ```python
 realtime_input_config = types.RealtimeInputConfig(
     automatic_activity_detection=types.AutomaticActivityDetection(
         disabled=False,
-        start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
+        start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,  # use LOW on noisy lines / PSTN
         end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
         prefix_padding_ms=200,
-        silence_duration_ms=400,
+        silence_duration_ms=500,  # 600-800 on noisy telephony; 1200 when collecting numbers
     ),
     activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
+    turn_coverage=types.TurnCoverage.TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO,
 )
 ```
+* **Flushing Buffered Audio on Mic Mute (`audio_stream_end=True`)**: Whenever the user mutes their microphone or your client pauses audio streaming for more than a second, call `await session.send_realtime_input(audio_stream_end=True)` so server VAD immediately closes any buffered trailing speech instead of waiting for silence frames that never arrive.
 
-### B. `TurnCoverage` & `activityHandling`
-* **`TURN_INCLUDES_ALL_INPUT` (Recommended for Barge-In)**: Includes all audio (including periods when the model is speaking) as part of the conversational turn so the model receives full context when interrupted.
-* **`TURN_INCLUDES_ONLY_ACTIVITY`**: Includes only active speech segments. Yields cleaner transcripts in noisy rooms but can clip abrupt barge-in phrases.
-* **`activityHandling: "START_OF_ACTIVITY_INTERRUPTS"`**: Standard duplex setting where detected speech interrupts model output. Pair with `START_SENSITIVITY_LOW` to prevent ambient noise from triggering interruptions.
+### B. `TurnCoverage` Defaults by Model & `activityHandling`
+| Enum Value | Default On | What Enters the Turn | Production Guidance |
+|---|---|---|---|
+| `TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO` | `gemini-3.8-live`, `gemini-3.8-live-extended-thinking` (and 3.1+) | Detected speech-activity audio segments **plus all video frames** sent during the session. | Default for 3.8. On audio-only calls it behaves identically to `TURN_INCLUDES_ONLY_ACTIVITY`. On video sessions, throttle camera capture (`<= 1 fps`) or switch to `TURN_INCLUDES_ONLY_ACTIVITY` if you only want video sampled while the user speaks. |
+| `TURN_INCLUDES_ONLY_ACTIVITY` | Legacy `2.5` models | Only audio and video segments captured between VAD speech start and speech end. | Recommended override on 3.8 multimodal sessions when continuous idle camera frames are unnecessary. |
+| `TURN_INCLUDES_ALL_INPUT` | None | Every audio and video frame sent since the previous turn, **including silence and background inactivity**. | Avoid on voice agents: streaming inter-turn silence inflates `Prompt AUDIO` token spend (`$3.00 / 1M`) and is not required for barge-in. |
+
+* **`activityHandling: "START_OF_ACTIVITY_INTERRUPTS"`** *(Default)*: Detected speech interrupts ongoing model output. Switch to `"NO_INTERRUPTION"` only during non-interruptible compliance disclosures.
 
 ### C. Backchannel Recovery & `prefix_padding_ms` for Spelled Input
 * **The problem**: Callers say one- or two-word backchannels ("haan", "ji", "accha", "okay") while the bot talks. Server VAD treats them as a barge-in, the model stops, and then waits for a question that never comes.
@@ -1275,7 +1279,7 @@ realtime_input_config = types.RealtimeInputConfig(
 * **Pin transcript languages on Vertex AI**: pass `AudioTranscriptionConfig(language_codes=["en-IN", "hi-IN"])` for both `input_audio_transcription` and `output_audio_transcription`. This stops Hindi transcripts from drifting into Urdu, Arabic, or Cyrillic script. `language_codes` is Vertex-only (see the AI Studio `AudioTranscriptionConfig` Invariant in §2).
 * **Separate `speech_config.language_code` from `AudioTranscriptionConfig.language_codes` Across Indic Locales**:
   - On Vertex AI Live (`gemini-3.8-live`), output voice synthesis (`speech_config.language_code`) and audio transcription (`AudioTranscriptionConfig(language_codes=[...])`) have **different Indic locale coverage** and should be configured separately.
-  - Passing an unsupported Indic locale (such as `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `bn-IN`, `ur-IN`) in `speech_config.language_code` falls back to `"en-US"` studio voice samples. **Do not omit `speech_config.language_code` either**, because omitting it also falls back to `"en-US"`. Instead, map unsupported Indic speech locales to `"en-IN"` (or `"hi-IN"`) in `speech_config.language_code` so `ROLE_SYSTEM` loads the Indian studio voice sample, while passing the specific regional Indic locale (`bn-IN`, `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `ur-IN`) into `AudioTranscriptionConfig(language_codes=[...])`.
+  - Passing an unsupported Indic locale (such as `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `bn-IN`, `ur-IN`) in `speech_config.language_code` falls back to `"en-US"` voice presets. **Do not omit `speech_config.language_code` either**, because omitting it also falls back to `"en-US"`. Instead, map unsupported Indic speech locales to `"en-IN"` (or `"hi-IN"`) in `speech_config.language_code` so the Indian voice preset is selected at setup, while passing the specific regional Indic locale (`bn-IN`, `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `ur-IN`) into `AudioTranscriptionConfig(language_codes=[...])`.
   - **Assamese `bn-IN` Orthography Watchout**: Mapping Assamese transcription to `"bn-IN"` transcribes speech in standard Bengali orthography and omits Assamese-specific `ৰ` (`U+09F0`) and `ৱ` (`U+09F1`). Guard any script-based language switcher so an Assamese session does not auto-switch to `Bengali` on `[ৰৱ]` absence unless the caller explicitly requests Bengali.
   - **Single-Locale Input ASR Lock vs. Mid-Call Language Switching**: Pinning `input_audio_transcription` to a single `[opening_locale]` locks input recognition for the whole session (and ignoring Latin characters in script detection blocks implicit switches to English). Pass a curated multi-locale list on `input_audio_transcription` whenever mid-call language switching is supported.
 * **Never put single letters (`A` to `Z`) or single digits (`0` to `9`) in a custom vocabulary or phrase hints**: single-character entries bias recognition toward one-character tokens, so short Hindi words such as "जी" (*ji*) are transcribed as "G". Add whole words and names only.
@@ -1363,24 +1367,37 @@ Because Gemini Live and Gemini TTS share the same prebuilt voice names (`Aoede`,
            await play_chunk(greeting_pcm[start:start + CHUNK_BYTES])
    ```
 2. **Wait Lines During Tool Calls**: Play a short saved clip (`"Let me check that for you."`) from your media server while a tool runs, and stop the clip as soon as model audio arrives. When you use this pattern, remove the *"say a short acknowledgment before calling a tool"* rule from `systemInstruction` so the caller does not hear two acknowledgments.
-3. **Repeated Replies in a Cascaded Pipeline (`STT -> LLM -> TTS`)**: Cache TTS audio under a key built from the normalized text, voice, TTS model, and settings like language, speed, and pitch, and skip saving audio when an `InterruptionFrame` arrives. The community package `pipecat-tts-cache` (`TTSCacheMixin`, `MemoryCacheBackend`, `RedisCacheBackend`) wraps any Pipecat TTS service (check its README for supported Pipecat versions before upgrading, and point `RedisCacheBackend` at a private Redis instance since it serializes audio with Python `pickle`):
+3. **Repeated Replies in a Cascaded Pipeline (`STT -> LLM -> TTS`)**: Cache raw `24 kHz` `s16le` PCM clips in Redis or memory under a deterministic SHA-256 key built from `(tts_model, voice, language_code, normalized_text)`, storing raw PCM bytes directly rather than Python `pickle` payloads and skipping cache writes whenever a turn is interrupted mid-synthesis:
    ```python
-   # pip install "pipecat-tts-cache[redis]"
-   from pipecat.services.google.tts import GoogleHttpTTSService
-   from pipecat_tts_cache import TTSCacheMixin
-   from pipecat_tts_cache.backends import RedisCacheBackend
+   import hashlib
+   from google import genai
+   from google.genai import types
 
-   class CachedGoogleTTS(TTSCacheMixin, GoogleHttpTTSService):
-       pass
+   async def synthesize_or_get_cached_pcm(
+       client: genai.Client, redis_client, text: str, voice: str = "Aoede"
+   ) -> bytes:
+       norm = " ".join(text.strip().split())
+       digest = hashlib.sha256(f"gemini-3.8-flash-tts|{voice}|{norm}".encode()).hexdigest()
+       cache_key = f"voice:tts:v1:{digest}"
+       cached = await redis_client.get(cache_key)
+       if cached:
+           return cached
 
-   tts = CachedGoogleTTS(
-       settings=CachedGoogleTTS.Settings(voice="en-US-Chirp3-HD-Aoede"),
-       cache_backend=RedisCacheBackend(
-           redis_url="redis://localhost:6379/0",
-           key_prefix="pipecat:tts:",
-       ),
-       cache_ttl=604800,  # keep clips for one week
-   )
+       resp = await client.aio.models.generate_content(
+           model="gemini-3.8-flash-tts",
+           contents=types.Content(parts=[types.Part.from_text(text=norm)]),
+           config=types.GenerateContentConfig(
+               response_modalities=["AUDIO"],
+               speech_config=types.SpeechConfig(
+                   voice_config=types.VoiceConfig(
+                       prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice)
+                   )
+               ),
+           ),
+       )
+       pcm = resp.candidates[0].content.parts[0].inline_data.data
+       await redis_client.set(cache_key, pcm, ex=604800)  # 7-day TTL on raw PCM bytes
+       return pcm
    ```
 
 ---
@@ -1392,8 +1409,8 @@ When a `FunctionResponse` is sent back to Gemini Live after the model has alread
 * **After a Filler Phrase (*"Let me look that up..."*)**: Use `scheduling="WHEN_IDLE"` so the model speaks the lookup result as soon as the filler audio finishes.
 * **Silent Background State Capture (Model Already Answered or Moved On)**: Use `scheduling="SILENT"` so the model records the state update without narrating *"I have recorded your preference."*
 
-### B. Pattern 1: `FunctionResponseScheduling.SILENT` (For Silent State-Capture Tools)
-* **Vertex AI Support**: Vertex AI Bidi WebSockets natively support `scheduling: "SILENT"` on tool responses.
+### B. Pattern 1: `FunctionResponseScheduling.SILENT` (For Non-Blocking State-Capture Tools)
+* **`NON_BLOCKING` Declaration Required**: `scheduling: "SILENT"` applies only when the tool's `FunctionDeclaration` includes `behavior: "NON_BLOCKING"` on `gemini-3.8-live` (and legacy `2.5`; ignored on blocking tools).
 * **Critical Proxy Rule**: Ensure your WebSocket proxy or Python/TypeScript SDK wrapper **does not strip the `scheduling` field** when serializing `sendToolResponse`.
 * **Reinforcement Hint**: Append `"SILENT EXECUTION."` to the end of state-capture tool descriptions in `functionDeclarations`.
 ```javascript
@@ -1439,11 +1456,11 @@ When the user navigates to a new context (new product category, new document, or
 
 ---
 
-### C. Mid-Session Instruction & Tool Updates: What Is Supported vs. What Is Merely Reachable
+### C. Mid-Session Instruction & Tool Updates (`send_context_update` vs. `role="system"` vs. Session Cycling)
 
-Long voice calls change shape. The caller gets verified, moves from browsing to checkout, or switches language. You then want a different persona and a different tool set without dropping the WebSocket. There are three ways to do that and they are not equally safe.
+Long voice calls change shape. The caller gets verified, moves from browsing to checkout, or switches language. You then want an updated prompt card and a scoped tool set without dropping the WebSocket.
 
-#### 1. Change the system instruction mid-session (supported and documented)
+#### 1. Change the system instruction mid-session (`role="system"` client content)
 Send a `clientContent` turn with `role="system"` and `turn_complete=False`. The model picks up the new instructions on its next turn. The WebSocket stays open, so the caller hears no gap in audio and the browser does not ask for the microphone again.
 
 ```python
@@ -1452,7 +1469,7 @@ await session.send_client_content(
     turn_complete=False)
 ```
 
-Verified working on `gemini-3.8-live` and `gemini-live-2.5-flash-native-audio`. See [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session). This is the mechanism to build on.
+Verified working on `gemini-3.8-live` and legacy `gemini-live-2.5-flash-native-audio`. See [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session).
 
 ##### Cost: an instruction update replaces, a `role="user"` note stacks
 Every turn bills the whole prompt again. A `role="system"` update (or `context_update.systemInstruction`) overwrites the previous instruction, so it is billed once per turn at its current size. A `role="user"` turn with `turn_complete=False` stays in conversation history and is billed again on every later turn. Measured on Vertex AI, a fresh session per method, three consecutive swaps of a ~570-token instruction (English, then French, German, Spanish), the same question after each swap:
@@ -1470,10 +1487,10 @@ What this means in practice:
 - Conversation history is not touched. Earlier turns, tool calls, and tool results stay, so return a one-line pointer from tool handlers instead of the card text.
 - An update sent while the model was speaking did not cut off the reply in 14 of 16 runs on these two models. The reply finished under the old instruction and the new one applied from the next turn. Still send updates between turns or inside the blocking tool handler.
 - On `gemini-live-2.5-flash-native-audio`, put the whole instruction in a single text part. On `gemini-3.8-live`, a `role="system"` message must contain exactly one turn.
-- On any other model (including `gemini-3.1-flash-live-preview` on Google AI Studio), check before relying on it: swap a large instruction three times and watch `usage_metadata.prompt_token_count`. Growth of only the last question and answer means replace. Growth by the instruction size means it stacks.
+- On any other model, check before relying on it: swap a large instruction three times and watch `usage_metadata.prompt_token_count`. Growth of only the last question and answer means replace. Growth by the instruction size means it stacks.
 
-#### 2. Reconnect to change tools (supported)
-The documented way to swap the active tool set is a new session with new `setup.tools`, using the Managed Session Cycling Pattern above so the microphone stays alive and the rolling session log carries the conversation across.
+#### 2. When to use Managed Session Cycling instead of in-place updates
+On `gemini-3.8-live`, prefer `await session.send_context_update(system_instruction=..., tools=...)` (below) to swap tools and instructions in place over the open WebSocket. Reserve full WebSocket reconnection (Managed Session Cycling, §22.B) for 10 to 15 minute connection rotations, switching voice presets (`speechConfig`), or legacy `gemini-live-2.5-flash-native-audio` deployments that do not accept `contextUpdate`.
 
 #### 3. Swap per-card tools and `systemInstruction` in place with `session.send_context_update()` (`google-genai >= 2.32.0`)
 Starting in `google-genai 2.32.0` (`pip install -U "google-genai>=2.32.0"`), `await session.send_context_update(system_instruction=..., tools=...)` replaces `system_instruction`, `tools`, or both in place on `gemini-3.8-live`, sending a `contextUpdate` (`context_update`) client message over the WebSocket. Sending it inside a blocking tool handler (right before returning the `FunctionResponse`) solves two multi-turn voice problems at once:
@@ -1483,7 +1500,8 @@ Starting in `google-genai 2.32.0` (`pip install -U "google-genai>=2.32.0"`), `aw
 
 > [!WARNING]
 > **Operational rules for `send_context_update`:**
-> - **Prefix cache invalidation**: `system_instruction` and `tools` sit in the model preamble, so every update invalidates the prefix cache. Update them only at major stage transitions (for example, `3 to 8 times` in a multi-step call), not on every turn.
+> - **Update at stage transitions, not on every turn**: Each `send_context_update` re-sends the full session setup, and your active `system_instruction` and `tools` are billed on every turn. Update them at major stage transitions (for example, `3 to 8 times` in a multi-step call), not on turns where nothing changed.
+> - **Declare `behavior="BLOCKING"` explicitly on stage-transition tools**: On `gemini-3.8-live`, declare `behavior="BLOCKING"` explicitly on synchronous stage-transition `FunctionDeclaration` schemas so the model pauses speech while your handler sends `send_context_update` and `send_tool_response` (`gemini-3.8-live-extended-thinking` requires `NON_BLOCKING`, so apply `send_context_update` once `sc.interaction_status == types.InteractionStatus.IDLE` or `turn_complete`).
 > - **Set at least one field**: Calling `await session.send_context_update()` with both `system_instruction=None` and `tools=None` raises ``ValueError("At least one of `system_instruction` or `tools` must be set.")``.
 > - **Full replacement (no merge)**: Every field you set replaces the previous value. Include global tools (such as `set_call_language`) in each card's `tools` list, and pass `base_rules + current_card + session_state` in `system_instruction`. Pass `tools=[]` (which sends `{"tools": {"tools": []}}` on the wire; `{"tools": {}}` is an equivalent raw form) to clear all tools on a talk-only closing card.
 > - **Check active tools before running**: Removing a tool declaration does not remove earlier `function_call` turns from conversation history, so the model can occasionally imitate an earlier call to a removed tool. Always check incoming tool calls against the current step's active tool list before executing them.
@@ -1615,22 +1633,23 @@ Giving the Live voice model direct UI selection tools (`select_option(id)`) caus
 ### B. The Silent Conductor Pattern (Recommended)
 Decouple conversational voice rendering from deterministic UI decision-making:
 1. **Live Voice Session (Zero UI Navigation Tools)**: Handles natural duplex conversation, empathy, and voice playout. Emits `inputAudioTranscription` of user speech.
-2. **Silent Conductor (Non-Live `generateContent` Call with `gemini-2.5-flash-lite`)**: Receives the user's transcribed utterance plus the JSON tree of valid UI option IDs. Returns exact, schema-validated option IDs (`response_mime_type="application/json"`, handling compound requests like *"filter by SUV, under $35,000, automatic transmission"* in one pass).
+2. **Silent Conductor (Non-Live `generateContent` Call with `gemini-3.8-flash` or `gemini-2.5-flash-lite`)**: Receives the user's transcribed utterance plus the JSON tree of valid UI option IDs. Returns exact, schema-validated option IDs (`response_mime_type="application/json"`, handling compound requests like *"filter by SUV, under $35,000, automatic transmission"* in one pass).
 3. **Background State Sync (`turnComplete: false`)**: The client applies the Conductor's UI state changes and informs the Live voice session via `sendClientContent({ turns: [...], turnComplete: false })`. The voice model sees the updated screen state and naturally acknowledges the selection without double-speaking.
 
 ---
 
 ## 24. Framework Evaluation Matrix & Decision Guide
 
-| Evaluation Factor | Native Vertex AI / GenAI SDK (Direct WebSocket) | Pipecat (Daily.co / Open Source) | LiveKit Agents |
-|---|---|---|---|
-| **Architecture** | Direct WebSocket proxy (`asyncio.gather`) | Linear DAG pipeline frame processing (`AudioFrame`) | Room / WebRTC SFU distributed mesh |
-| **Latency** | **Lowest (Zero Abstraction Tax)** | Low (`~10 to 20ms` Python frame queue) | Low (WebRTC SFU network hop) |
-| **API Release Velocity** | **Immediate (Day-0 access to new `google-genai` flags)** | 2 to 8 week OSS wrapper lag unless subclassed | 1 to 4 week OSS plugin lag |
-| **High-Scale Overhead (`>1,000` CCU)** | Lowest memory and CPU footprint | Python `AudioFrame` object allocation pressure | Additional SFU media routing hop |
-| **Observability** | Custom OpenTelemetry, LangSmith & Cloud Logging | **Whisker** (local visual debugger) & **Tail** CLI | **LiveKit Cloud Insights** (unified timeline audio/log replay) |
-| **Scaling Model** | Cloud Run / GKE HPA on active WebSocket concurrency | Explicit worker pools or Cloud Run concurrency scaling | Automatic warm pool provisioning |
-| **Best Suited For** | High-scale (`>1,000` CCU), latency-critical custom voice pipelines | Rapid multi-provider pipelines (Live + Cascaded STT/LLM/TTS fallback) | Turnkey WebRTC rooms, SIP telephony trunks, and multi-participant calls |
+Choose an integration layer by matching your transport, orchestration, and scaling requirements across the four common options:
+
+| Evaluation Factor | Direct `google-genai` SDK (WebSocket) | Google ADK (`google-adk`) | LiveKit Agents | Pipecat (Open Source) |
+|---|---|---|---|---|
+| **Architecture** | Direct `client.aio.live.connect()` coroutine loop | Multi-agent `Runner.run_live()` + `LiveRequestQueue` over `google-genai` | WebRTC SFU room mesh + agent worker process | Frame-based Python audio pipeline (`FrameProcessor` DAG) |
+| **Transport Strength** | Custom WebSocket media gateways & minimal-hop proxies | Native Vertex AI Agent Engine, sub-agent handoffs & session state | Browser/mobile WebRTC rooms, packet-loss concealment & SIP trunks | Modular carrier WebSocket serializers (Twilio, Plivo, Exotel) & STT/LLM/TTS swaps |
+| **API Flag Access** | Day-0 access to every `google-genai` field (`send_context_update`, `interaction_status`) | Native Google integration; pass raw `LiveConnectConfig` via `RunConfig` | Depends on plugin release cadence unless wrapping `google-genai` directly | Depends on wrapper release cadence (pin `gemini-3.8-live` explicitly) |
+| **Runtime Overhead** | Lowest memory and CPU footprint per concurrent call | Low overhead; adds `SessionService` event persistence | WebRTC SFU media hop + room worker process | Per-frame Python object pipeline overhead |
+| **Observability** | Custom OpenTelemetry & Cloud Logging | Cloud Trace, Vertex AI Agent Evaluation & ADK web UI | LiveKit Cloud timeline & room audio/log replay | Frame-level pipeline loggers & Whisker/Tail debuggers |
+| **Best Suited For** | Latency-critical custom gateways, full protocol control, high concurrency | Multi-agent tool/handoff graphs on Google Cloud & Vertex AI | Browser/mobile WebRTC apps, video + voice rooms, and managed SIP | Teams wanting pluggable multi-vendor STT/LLM/TTS + telephony adapters |
 
 ---
 
@@ -1641,12 +1660,12 @@ Decouple conversational voice rendering from deterministic UI decision-making:
 2. **Tier 2: Virtual Audio Loopback (`~10 min/run`)**: Route synthesized TTS audio through a virtual audio loopback device (`BlackHole 2ch` on macOS or PulseAudio `module-null-sink` on Linux) into Chrome's `getUserMedia` input to test VAD sensitivity, barge-in recovery, and audio gating end to end.
 3. **Statistical Reporting Rule (`N >= 3`)**: Because native audio models are stochastic, never validate a prompt or tool change from a single test run. Run at least `N = 3` trials (`N = 5` for tool-routing edge cases) and verify 100% pass consistency.
 4. **Apples-to-Apples Token Benchmarking (`thoughts_token_count` & Uniform `SlidingWindow`)**: Under Live rate weighting (`$0.75/1M` text in, `$3.00/1M` audio in, `$4.50/1M` text out + `thoughts_token_count`, `$12.00/1M` audio out), live `thoughts_token_count` (`~800 to 1,100` tokens/call when thinking is enabled) carries a `6x` cost weight relative to text input and must never be compared against cached text-replay traces where `thoughts_token_count == 0`. Keep `SlidingWindow` `trigger_tokens` and `target_tokens` identical across all compared variants.
-5. **SSOT-Synced Judge Rubrics & Output-ASR Script Grading**: Generate or unit-test LLM-as-judge pricing and perk rubrics directly from the runtime skill's single source of truth (`pricing.md` / `cards.yaml`) and filter holdout cases targeting intentionally excluded policy updates so valid agent answers are not penalized as false hallucinations. When grading script purity on `output_audio_transcription`, remember it grades audio transcription output rather than raw LLM text; pin `AudioTranscriptionConfig(language_codes=[...])` (§19.D) to minimize single-character homophone slips across related Indic scripts.
+5. **SSOT-Synced Judge Rubrics & Output-ASR Script Grading**: Generate or unit-test LLM-as-judge domain-fact and policy rubrics directly from the runtime skill's single source of truth (`product_catalog.md` / `cards.yaml`) and filter holdout cases targeting intentionally excluded policy updates so valid agent answers are not penalized as false hallucinations. When grading script purity on `output_audio_transcription`, remember it grades audio transcription output rather than raw LLM text; pin `AudioTranscriptionConfig(language_codes=[...])` (§19.D) to minimize single-character homophone slips across related Indic scripts.
 
 ### B. Cascade (`STT -> LLM -> TTS`) vs. Native Duplex (`Gemini Live`) Unit Economics
 
 | Architecture | Typical Turn Latency (TTFB) | Optimized Per-Minute Cost (`6 turns/min`) | Strengths & Trade-Offs |
 |---|---:|---:|---|
-| **Cascaded Pipeline (`Chirp 3 STT -> Gemini 2.5 Flash-Lite -> Cloud TTS`)** | `850ms to 1,400ms` | `$0.018 to $0.026 / min` (`1.8¢ to 2.6¢/min`) | Predictable linear text context growth; explicit transcript inspection before LLM execution; higher turn-taking latency and no native acoustic emotion recognition. |
-| **Gemini Live Native Duplex (Optimized: JIT Cards + Audio-to-Text Pruning + `SlidingWindow 5000/3500`)** | **`280ms to 450ms`** | **`$0.025 to $0.031 / min` (`2.5¢ to 3.1¢/min`)** | Sub-500ms human-like turn-taking, native barge-in truncation, affective prosody, and 97+ language fluency at comparable per-minute cost to a cascaded stack. |
-| **Gemini Live Native Duplex (Unmanaged: `4,500`-tok static prompt, no `SlidingWindow`)** | `350ms to 600ms` | `$0.082 / min` at 3 min (`$0.246` total), growing quadratically on longer calls | Unbounded `Prompt AUDIO` + static prompt re-billing; always apply the 3-step optimization playbook (§13.B to §13.D) before production launch. |
+| **Cascaded Pipeline (`Chirp 3 STT -> Gemini 3.8 Flash / 2.5 Flash-Lite -> Gemini 3.8 TTS`)** | `850ms to 1,400ms` (observed) | `$0.018 to $0.026 / min` (`1.8¢ to 2.6¢/min`) | Predictable linear text context growth; explicit transcript inspection before LLM execution; higher turn-taking latency and no native acoustic emotion recognition. |
+| **Gemini 3.8 Live Native Duplex (Optimized: JIT Cards + Audio-to-Text Pruning + `SlidingWindow 5000/3500`)** | **`280ms to 450ms` (observed)** | **`$0.025 to $0.031 / min` (`2.5¢ to 3.1¢/min`)** | Sub-500ms human-like turn-taking, native barge-in truncation, affective prosody, and 97+ language fluency at comparable per-minute cost to a cascaded stack. |
+| **Gemini 3.8 Live Native Duplex (Unmanaged: `4,500`-tok static prompt, no `SlidingWindow`)** | `350ms to 600ms` (observed) | `$0.082 / min` at 3 min (`$0.246` total), growing quadratically on longer calls | Unbounded `Prompt AUDIO` + static prompt re-billing; always apply the 3-step optimization playbook (§13.B to §13.D) before production launch. |

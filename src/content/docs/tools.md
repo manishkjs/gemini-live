@@ -24,25 +24,23 @@ In **Gemini Live**, the session is a continuous, real-time audio stream. When th
 
 ## 1. The async tool lifecycle
 
-1. **Tool declaration**: You pass function schemas (`functionDeclarations`) in the initial `setup` message.
+1. **Tool declaration**: Pass function schemas (`functionDeclarations`) in `setup.tools`. Set `behavior="NON_BLOCKING"` on background tools (`gemini-3.8-live` supports both blocking and `NON_BLOCKING`; `gemini-3.8-live-extended-thinking` **requires** `behavior="NON_BLOCKING"` on all custom tools; retiring `gemini-3.1-flash-live-preview` only supported synchronous blocking calls).
 2. **Tool call (`serverContent` / `toolCall`)**: The model emits a `toolCall` message containing one or more `functionCalls`, each with a unique `id`, `name`, and `args`.
-3. **Speech overlap**: Often, the model will say *"Let me check that for you"* right before or while emitting the `toolCall`, and the user might immediately add *"Oh, and make sure it's for tomorrow."*
-4. **Tool response (`toolResponse`)**: Your backend executes the API/database query and sends back a `toolResponse` matching the `id`.
+3. **Speech overlap**: Often, the model will say *"Let me check that for you"* right before or while emitting a `NON_BLOCKING` `toolCall`, and the user might immediately add *"Oh, and make sure it's for tomorrow."*
+4. **Tool response (`send_tool_response`)**: Your backend executes the API/database query and sends back the matching `FunctionResponse` via `session.send_tool_response(...)`.
 
 ```python
 from google.genai import types
 
 # Sending the tool result back over the active session
-await session.send(
-    input=types.LiveClientToolResponse(
-        function_responses=[
-            types.FunctionResponse(
-                id=function_call.id,
-                name=function_call.name,
-                response={"result": {"status": "confirmed", "order_id": "ORD-9921"}}
-            )
-        ]
-    )
+await session.send_tool_response(
+    function_responses=[
+        types.FunctionResponse(
+            id=function_call.id,
+            name=function_call.name,
+            response={"status": "confirmed", "order_id": "ORD-9921"},
+        )
+    ]
 )
 ```
 
@@ -50,28 +48,39 @@ await session.send(
 
 ## 2. Controlling response scheduling (`SILENT`, `INTERRUPT`, `WHEN_IDLE`)
 
-When a background tool finishes and returns data to the model, you can control how and when the model speaks the result using `FunctionResponseScheduling` inside `FunctionResponse`:
+When a **non-blocking** background tool (`behavior="NON_BLOCKING"`) finishes on `gemini-3.8-live` (or legacy `2.5`), you control how and when the model speaks the result using `FunctionResponseScheduling` inside `FunctionResponse`. (`scheduling` applies **only** to `NON_BLOCKING` function declarations and is ignored on synchronous blocking tools; on `gemini-3.8-live-extended-thinking`, background reasoning schedules speech automatically and exposes `message.server_content.interaction_status` / wire `serverContent.interactionStatus`.)
 
 | Scheduling Mode | Behavior | Best Use Case |
 | :--- | :--- | :--- |
-| **`WHEN_IDLE`** *(Default)* | Waits until the model finishes its current utterance (and the user is not speaking) before speaking the tool result. | Standard customer lookups (order status, account balance, flight search). |
+| **`WHEN_IDLE`** *(Default for `NON_BLOCKING`)* | Waits until the model finishes its current utterance (and the user is not speaking) before speaking the tool result. | Standard customer lookups (order status, account balance, flight search). |
 | **`INTERRUPT`** | Immediately interrupts whatever the model is currently saying to announce the tool result. | Urgent alerts, safety guardrails, or payment failures that invalidate the current speech. |
 | **`SILENT`** | Appends the tool output to the conversation context silently without triggering a spoken response. | Background CRM prefetching, state updates, or logging where the model only needs the data for future turns. |
 
 ```python
 from google.genai import types
 
-await session.send(
-    input=types.LiveClientToolResponse(
-        function_responses=[
-            types.FunctionResponse(
-                id=function_call.id,
-                name="prefetch_customer_profile",
-                response={"tier": "Platinum", "open_tickets": 1},
-                scheduling=types.FunctionResponseScheduling.SILENT,
-            )
-        ]
-    )
+# 1. Declare the tool as NON_BLOCKING in setup:
+prefetch_decl = types.FunctionDeclaration(
+    name="prefetch_customer_profile",
+    description="Fetches account tier and open ticket count in the background.",
+    behavior="NON_BLOCKING",
+    parameters=types.Schema(
+        type="OBJECT",
+        properties={"customer_id": types.Schema(type="STRING")},
+        required=["customer_id"],
+    ),
+)
+
+# 2. Return the background result with SILENT scheduling:
+await session.send_tool_response(
+    function_responses=[
+        types.FunctionResponse(
+            id=function_call.id,
+            name="prefetch_customer_profile",
+            response={"tier": "Platinum", "open_tickets": 1},
+            scheduling=types.FunctionResponseScheduling.SILENT,
+        )
+    ]
 )
 ```
 
@@ -90,13 +99,13 @@ Whenever you invoke `lookup_order_status` or `verify_identity`, always say a bri
 
 ---
 
-## 4. Handling user barge-in during tool execution (the AntiCancel shield)
+## 4. Handling user barge-in during tool execution (cancellation shield)
 
 A common production failure occurs when:
 1. The model calls `create_support_ticket(issue="broken screen")` and says *"I'm creating that ticket for you now."*
 2. While the HTTP POST to Zendesk is in flight, the user coughs or says *"Thanks."*
 3. VAD triggers an `interrupted: true` event.
-4. Naive orchestration frameworks cancel the entire turn task on `interrupted: true`, killing the in-flight HTTP request or dropping the `toolResponse` so the model never learns whether the ticket was created.
+4. Naive orchestration loops cancel the entire turn task on `interrupted: true`, killing the in-flight HTTP request or dropping the `toolResponse` so the model never learns whether the ticket was created.
 
 ### The decoupling rule
 Never bind the lifecycle of state-mutating tool executions to the audio playback task.
@@ -105,22 +114,21 @@ Never bind the lifecycle of state-mutating tool executions to the audio playback
 
 ```python
 import asyncio
+from google.genai import types
 
 async def handle_tool_call(session, function_call):
     # Shield the database/API execution from audio barge-in cancellation
     result = await asyncio.shield(execute_backend_api(function_call.name, function_call.args))
-    
+
     # Always deliver the toolResponse so the model's context stays consistent
-    await session.send(
-        input=types.LiveClientToolResponse(
-            function_responses=[
-                types.FunctionResponse(
-                    id=function_call.id,
-                    name=function_call.name,
-                    response={"result": result}
-                )
-            ]
-        )
+    await session.send_tool_response(
+        function_responses=[
+            types.FunctionResponse(
+                id=function_call.id,
+                name=function_call.name,
+                response={"result": result},
+            )
+        ]
     )
 ```
 
@@ -224,10 +232,11 @@ await session.send_context_update(
 )
 ```
 
-Sending `send_context_update` inside a blocking tool handler (right before returning the `FunctionResponse`) replaces the active tool list with only the tools the next prompt card needs and refreshes `systemInstruction` with the active card and session state, so sliding-window compression never drops the card.
+Sending `send_context_update` inside a synchronous blocking tool handler (`behavior="BLOCKING"`, right before returning the `FunctionResponse`) replaces the active tool list with only the tools the next prompt card needs and refreshes `systemInstruction` with the active card and session state, so sliding-window compression never drops the card.
 
 :::caution[Operational rules for `send_context_update`]
-- **Update at major stage transitions, not on every turn**: `system_instruction` and `tools` sit in the model preamble, so every update invalidates the prefix cache. Swap them when the conversation moves to a new phase card (for example, `3 to 8 times` in a multi-step call), not on turns where nothing changed.
+- **Update at major stage transitions, not on every turn**: Each update re-sends the full `system_instruction` and `tools` setup, and active instructions plus tool schemas are billed on every turn. Swap them when the conversation moves to a new phase card (for example, `3 to 8 times` in a multi-step call), not on turns where nothing changed.
+- **Declare `behavior="BLOCKING"` explicitly on stage-transition tools**: On `gemini-3.8-live`, set `behavior="BLOCKING"` explicitly on `FunctionDeclaration` schemas whose handler calls `send_context_update`, ensuring the model pauses speech until both `send_context_update` and `send_tool_response` complete (`gemini-3.8-live-extended-thinking` requires `NON_BLOCKING`, so send `send_context_update` once `message.server_content.interaction_status == types.InteractionStatus.IDLE` or `turn_complete`).
 - **Set at least one field**: Calling `await session.send_context_update()` with both `system_instruction=None` and `tools=None` raises ``ValueError("At least one of `system_instruction` or `tools` must be set.")``.
 - **Full replacement (no merge)**: Every field you set replaces the previous value. Include global tools (such as `set_call_language`) in each card's `tools` list, and pass `base_rules + current_card + session_state` in `system_instruction`.
 - **Check active tools before running**: Removing a tool declaration does not remove earlier `function_call` turns from conversation history, so the model can occasionally imitate an old call. Check incoming tool calls against the current card's active tool list before running them.
@@ -416,6 +425,6 @@ if not matches:
     )
 ```
 
-Keep the `instruction` field to a single concise sentence and `call_state` under 60 tokens. Never dump full state dictionaries or multi-paragraph instructions into every `FunctionResponse`, because every tool result stays in `ROLE_USER` history and is re-billed on every later turn until `SlidingWindow` trims it.
+Keep the `instruction` field to a single concise sentence and `call_state` under 60 tokens. Never dump full state dictionaries or multi-paragraph instructions into every `FunctionResponse`, because every tool result stays in conversation history and is re-billed on every later turn until `SlidingWindow` trims it.
 
 

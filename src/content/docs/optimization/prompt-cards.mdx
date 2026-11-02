@@ -161,7 +161,7 @@ With `context_update`, each of the 8 prompt cards registers only the tools neede
 
 ### Python pattern: `session.send_context_update()` and tool handler
 
-Starting in `google-genai 2.32.0` (`pip install -U "google-genai>=2.32.0"`), call `await session.send_context_update(...)` inside your blocking tool handler right before returning the `FunctionResponse`:
+Starting in `google-genai 2.32.0` (`pip install -U "google-genai>=2.32.0"`), call `await session.send_context_update(...)` inside your synchronous blocking tool handler (`behavior="BLOCKING"`) right before returning the `FunctionResponse`:
 
 ```python
 from google.genai import types
@@ -229,7 +229,8 @@ async def on_tool_call(session, function_call, call: dict, run_step):
 See [Tools -> What to put in a FunctionResponse](/gemini-live/tools/#8-what-to-put-in-a-functionresponse) for the spoken-field rule and why `vocal_tone` rides in every result, and [Tools -> Raw WebSocket JSON payloads](/gemini-live/tools/#raw-websocket-json-payloads-for-non-python-runtimes-or-google-genai--2320) if you are sending raw WebSocket frames from a non-Python runtime.
 
 :::caution[Operational rules for `send_context_update`]
-- **Update at stage changes, not on every turn**: `system_instruction` and `tools` sit in the model preamble, so every update invalidates the prefix cache. Update them when the conversation enters a new phase card (for example, `3 to 8 times` in a multi-step call), not on turns where nothing changed.
+- **Update at stage changes, not on every turn**: Each update re-sends the full `system_instruction` and `tools` setup, and active instructions plus tool schemas are billed on every turn. Update them when the conversation enters a new phase card (for example, `3 to 8 times` in a multi-step call), not on turns where nothing changed.
+- **Declare `behavior="BLOCKING"` explicitly on card-transition tools**: On `gemini-3.8-live`, set `behavior="BLOCKING"` explicitly on `FunctionDeclaration` schemas whose handler calls `send_context_update`, ensuring the model pauses speech until both `send_context_update` and `send_tool_response` complete (`gemini-3.8-live-extended-thinking` requires `NON_BLOCKING`, so apply `send_context_update` once `message.server_content.interaction_status == types.InteractionStatus.IDLE` or `turn_complete`).
 - **Set at least one field**: Calling `await session.send_context_update()` with both `system_instruction=None` and `tools=None` raises ``ValueError("At least one of `system_instruction` or `tools` must be set.")``.
 - **Full replacement (no merge)**: Every `send_context_update` call replaces (does not merge) the fields you set. Keep global tools like `set_call_language` in every card's `tools` list, and pass `base_rules + current_card + session_state` in `system_instruction`.
 - **Clearing all tools**: Passing `tools=[]` in `session.send_context_update(tools=[])` (which sends `{"tools": {"tools": []}}` on the wire; `{"tools": {}}` is an equivalent raw form) clears all tools. Send it only on a talk-only card. Leave `tools=None` (or omit the `"tools"` key on a raw WebSocket) when you only want to update `system_instruction`.

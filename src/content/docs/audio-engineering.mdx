@@ -127,18 +127,21 @@ Server-side VAD is authoritative for turn state, but waiting for a network round
 Do not use client-side VAD to gate which microphone frames you send to the server. Clipping the leading consonants of user speech degrades transcription and native audio comprehension far more than streaming silence.
 </Aside>
 
-## Turn coverage (`turnCoverage`)
+## Turn coverage (`turnCoverage`) and mic pause flushing
 
-Under `realtimeInputConfig`, `turnCoverage` controls which audio frames are included in the user's turn context:
+Under `realtimeInputConfig`, `turnCoverage` controls which realtime audio and video segments are included in the user's turn context:
 
 | Setting | Behavior | Recommended use |
 | --- | --- | --- |
-| **`TURN_INCLUDES_ONLY_ACTIVITY` (Default)** | Includes only segments since the last turn flagged as active speech, excluding silence and inactivity | **Default for voice agents**: strips non-speech silence between turns so room tone does not inflate carried audio tokens |
-| `TURN_INCLUDES_ALL_INPUT` | Includes all realtime input since the last turn, including inactivity and silence | Only when the model needs continuous ambient audio between utterances |
+| **`TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO`** *(Default on `gemini-3.8-live`)* | Includes VAD-active speech segments plus all video frames sent during the turn, stripping silent audio between turns | **Default on `3.8`**: strips non-speech room silence while retaining continuous visual context |
+| **`TURN_INCLUDES_ONLY_ACTIVITY`** *(Default on legacy `2.5`)* | Includes only audio and video segments captured while speech activity is detected | Voice-only parity on `2.5`, or multimodal `3.8` sessions where video frames between utterances should be excluded to trim `$1.00/1M` video input tokens |
+| `TURN_INCLUDES_ALL_INPUT` | Includes all realtime input since the last turn, including silent audio inactivity | Avoid on voice calls: forwards room silence into the turn and inflates `$3.00/1M` audio token billing |
+
+When a user mutes their microphone or pauses an active stream while automatic VAD is enabled, send `realtimeInput: { "audioStreamEnd": true }` (`await session.send_realtime_input(audio_stream_end=True)`) once so the server flushes any buffered speech immediately.
 
 ## Play bot PCM directly to `AudioContext.destination` over WebSockets
 
-When streaming `24 kHz` raw PCM over a WebSocket, connect `AudioBufferSourceNode -> GainNode -> audioContext.destination` directly instead of routing WebAudio through `createMediaStreamDestination()` into an HTML `<audio srcObject={MediaStream}>` element (as WebRTC media wrappers such as `@pipecat-ai/daily-media-manager` do by default).
+When streaming `24 kHz` raw PCM over a WebSocket, connect `AudioBufferSourceNode -> GainNode -> audioContext.destination` directly instead of routing WebAudio through `createMediaStreamDestination()` into an HTML `<audio srcObject={MediaStream}>` element (as many WebRTC room wrappers do by default).
 
 - **Why voice timbre shifts on Turn 2+ with `<audio srcObject>`**: On Turn 1 (before caller speech), `<audio srcObject={MediaStream}>` plays cleanly. As soon as the caller speaks into an active `getUserMedia` microphone between Turn 1 and Turn 2, OS and browser WebRTC communication-mode audio processing (such as macOS `VoiceProcessingIO` and Chrome WebRTC ducking/AGC) engages on `<audio srcObject>`, shifting EQ, warmth, and loudness from Turn 2 onward across both Live and cascaded TTS pipelines.
 - **Visualizer side-chain**: Feed UI waveform visualizers from a separate branch (`GainNode -> AnalyserNode -> MediaStreamAudioDestinationNode`) that is never attached to an `<audio>` DOM element.
@@ -149,16 +152,16 @@ When streaming `24 kHz` raw PCM over a WebSocket, connect `AudioBufferSourceNode
 Two transport-boundary bugs commonly masquerade as model audio glitches:
 
 1. **Odd-byte `s16le` chunk splits**: Network or streaming TTS chunks can split on an odd byte count (`len(chunk) % 2 === 1`), swapping low and high bytes on every subsequent `Int16` sample into white noise. Carry any trailing odd byte (`pcmCarry`) into the next frame and strip any `RIFF...WAVE` container header before queuing raw PCM.
-2. **Sub-chunk utterance tail drops in media senders**: Output transports that slice audio into fixed `40 ms` frames (`1,920` bytes at `24 kHz` mono, such as Pipecat `1.2+` `BaseOutputTransport.MediaSender`) clear their internal buffer on `TTSStoppedFrame` without flushing trailing bytes smaller than one `40 ms` chunk, clipping final syllables. Pad utterance tails with `0x00` silence up to the `40 ms` frame boundary right before `TTSStoppedFrame`, explicitly set `audio_in_sample_rate=16000` and `audio_out_sample_rate=24000`, and emit urgent client `interruption` messages strictly on `InterruptionFrame` rather than raw `VADUserStartedSpeakingFrame`.
+2. **Sub-chunk utterance tail drops in media senders**: Output media senders that slice audio into fixed `40 ms` frames (`1,920` bytes at `24 kHz` mono) often clear their internal buffer on an end-of-utterance event without flushing trailing bytes smaller than one `40 ms` chunk, clipping final syllables. Pad utterance tails with `0x00` silence up to the `40 ms` frame boundary right before closing the utterance, explicitly pin input and output sample rates to `16000` Hz and `24000` Hz, and emit urgent client `interruption` messages strictly on confirmed barge-in events rather than raw start-of-speech spikes.
 
 ## Production audio checklist
 
 - [ ] `echoCancellation`, `noiseSuppression`, and `autoGainControl` enabled in `getUserMedia`.
 - [ ] PCM capture and 16 kHz resampling execute inside an `AudioWorklet` connected to a muted `GainNode(0)` sink (with anti-aliased sinc/`soxr` downsampling when recording `24 kHz` voice-clone reference clips).
 - [ ] `24 kHz` bot PCM plays directly to `AudioContext.destination` (avoiding `<audio srcObject={MediaStream}>` WebRTC ducking on Turn 2+).
-- [ ] Streaming PCM chunks preserve 2-byte `s16le` alignment and pad utterance tails to `40 ms` (`1,920`-byte) transport boundaries before `TTSStoppedFrame`.
+- [ ] Streaming PCM chunks preserve 2-byte `s16le` alignment and pad utterance tails to `40 ms` (`1,920`-byte) transport boundaries before closing each spoken turn.
 - [ ] Output playout uses an adaptive 150 to 200 ms jitter buffer at 24 kHz.
 - [ ] `socket.bufferedAmount` is checked before every `send()`.
 - [ ] Local VAD halts speaker playout immediately on barge-in, while `interrupted` flushes any newly arrived chunks.
-- [ ] For noisy rooms, PSTN telephony filters (`KrispVivaFilter`, `RNNoiseFilter`), background speech isolation, and cough/backchannel recovery, see [Noise, background speech & VAD](/gemini-live/audio-engineering/noise-and-vad/).
+- [ ] For noisy rooms, PSTN telephony filters (Krisp VIVA, RNNoise, ai-coustics), background speech isolation, and cough/backchannel recovery, see [Noise, background speech & VAD](/gemini-live/audio-engineering/noise-and-vad/).
 

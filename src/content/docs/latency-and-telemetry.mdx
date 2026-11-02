@@ -25,9 +25,9 @@ True **Voice-to-Voice Latency** is the elapsed time from the **last millisecond 
 
 | Stage | Typical Duration | What Happens | How to Optimize |
 | :--- | :--- | :--- | :--- |
-| **1. Network Transport (Client → Backend → Vertex)** | `30–60ms` | 20ms–40ms PCM audio frames traverse WebRTC/WebSocket to the regional endpoint. | Co-locate your Cloud Run / GKE media gateway in `us-central1` alongside the Vertex AI endpoint; use WebRTC (UDP) for the client leg. |
-| **2. VAD Silence Duration (`silenceDurationMs`)** | `300–500ms` | The server waits after the user stops speaking to confirm the turn is finished. | Tune `silenceDurationMs` down from `500ms` to `350ms` for snappy transactional bots. |
-| **3. Model Time-to-First-Audio-Byte (TTFAB)** | `220–350ms` | Gemini Live processes the active context window and synthesizes the first 24kHz PCM chunk. | Keep active context under 5,000 tokens using [SlidingWindow compression](/gemini-live/optimization/#pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker) and modular prompt cards. |
+| **1. Network Transport (Client -> Backend -> Vertex)** | `30 to 60 ms` | 20 to 40 ms PCM audio frames traverse WebRTC/WebSocket to the regional endpoint. | Co-locate your Cloud Run / GKE media gateway in `us-central1` alongside the Vertex AI endpoint; use WebRTC (UDP) for the client leg. |
+| **2. VAD Silence Duration (`silenceDurationMs`)** | `500 ms` baseline (`350 to 800 ms`) | The server waits after the user stops speaking to confirm the turn is finished. | Use `500 ms` on clean web/headset mics, `600 to 800 ms` on noisy PSTN lines, and lower to `350 to 400 ms` only on clean close-mic transactional bots. |
+| **3. Model Time-to-First-Audio-Byte (TTFAB)** | `220 to 350 ms` | `gemini-3.8-live` processes the active context window and synthesizes the first 24 kHz PCM chunk. | Keep active context under 5,000 tokens using [SlidingWindow compression](/gemini-live/optimization/#pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker) and modular prompt cards. |
 
 :::tip[Separating VAD wait time from model inference time]
 When logging latency in production, always record **Total Turn Latency** (`speech_end → first_audio_byte`) alongside **Model Inference Latency** (`vad_end_of_speech → first_audio_byte`). Otherwise, a deliberate `600ms` `silenceDurationMs` setting will look like a model slowdown on your dashboards.
