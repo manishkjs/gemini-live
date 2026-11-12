@@ -59,7 +59,7 @@ Your base instructions sit at the top. After twenty turns, accumulated audio and
 
 #### Update setup on step transitions, not on every turn
 
-Your tools and instructions sit in session setup above rolling history. Updating either one via `session.send_context_update()` re-sends the full setup block. Since you only change phase cards 3 to 6 times during a call, updating on step transitions stays fast and saves thousands of billed tokens across the rest of the turns.
+Your tools and instructions sit in session setup above rolling history. Updating either one via `session.send_context_update()` makes the server process the session again from the top, so the next reply can be slower. Since you only change phase cards 3 to 6 times during a call, that slowdown stays rare, and the smaller active prompt saves thousands of billed tokens across the rest of the turns.
 
 #### The server decides what the caller heard
 

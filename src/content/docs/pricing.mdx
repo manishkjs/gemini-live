@@ -58,7 +58,7 @@ How historical turns are billed depends on how your session manages prior audio 
 A common misconception is that implicit prompt caching automatically discounts your system prompt and audio history by 75% to 90% on every turn.
 
 :::caution[Implicit Caching Limitations on Live WebSockets]
-In the Live WebSocket pipeline, **streaming audio turns do not receive implicit cache hit discounts**. Every token in your active `systemInstruction`, `tools` array, and unpruned conversation history is billed at the standard input rate on every single turn.
+In the Live WebSocket pipeline, **streaming audio turns do not receive implicit cache hit discounts**. Every token in your active `systemInstruction`, `tools` array, and unpruned conversation history is billed at the standard input rate on every single turn. You also cannot attach a pre-built cache to a Live session: the Live connect config has no cached-content field.
 :::
 
 Because there is no automatic cache discount on live WebSocket turns:
