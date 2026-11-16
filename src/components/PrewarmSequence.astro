@@ -1,0 +1,417 @@
+---
+/**
+ * Interactive animated sequence diagram for WebSocket session pool pre-warming.
+ *
+ * Compares:
+ * 1. Greeting already loaded (no contextUpdate needed at handover)
+ * 2. Shared pool + send_context_update() sent in order with the opening turn
+ * 3. Old way (clientContent only: tools fixed, context sits in history)
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Everything above the green line happens in the background before the user speaks. Click the three buttons above the diagram to compare handover modes.',
+} = Astro.props;
+
+const stream = [0, 0.43, 0.86];
+---
+
+<figure class="prewarm-diagram">
+  <div class="prewarm-toolbar" role="tablist" aria-label="Pre-warming handover modes">
+    <div class="prewarm-modes">
+      <span class="prewarm-toolbar-label">Compare:</span>
+      <button type="button" class="pw-btn active" data-pw-mode="fast">
+        1. Greeting already loaded
+      </button>
+      <button type="button" class="pw-btn" data-pw-mode="ctx">
+        2. Shared pool + context update
+      </button>
+      <button type="button" class="pw-btn" data-pw-mode="legacy">
+        3. Old way (clientContent only)
+      </button>
+    </div>
+    <span class="pw-badge" data-pw-badge>
+      No handshake wait · no update at handover
+    </span>
+  </div>
+
+  <svg viewBox="0 0 760 350" role="img" aria-labelledby="pw-title pw-desc">
+    <title id="pw-title">Gemini Live WebSocket session pool pre-warming sequence</title>
+    <desc id="pw-desc">
+      A four-lifeline sequence diagram across Client or Glasses, App server,
+      Session pool, and Gemini Live. Step 1 happens in the background before
+      the user speaks: the session pool connects, sends setup, and receives
+      setupComplete. Step 2 happens when the user says the wake word: the app
+      server takes a ready session from the pool, optionally sends a
+      send_context_update frame in order, sends the opening turn, and streams
+      bidirectional audio immediately.
+    </desc>
+
+    <!-- Actor headers -->
+    <rect x="25" y="6" width="130" height="26" rx="5" class="actor-box" />
+    <text x="90" y="23" class="actor">Client / Glasses</text>
+
+    <rect x="215" y="6" width="130" height="26" rx="5" class="actor-box" />
+    <text x="280" y="23" class="actor">App server</text>
+
+    <rect x="415" y="6" width="130" height="26" rx="5" class="actor-box" />
+    <text x="480" y="23" class="actor">Session pool</text>
+
+    <rect x="625" y="6" width="110" height="26" rx="5" class="actor-box" />
+    <text x="680" y="23" class="actor">Gemini Live</text>
+
+    <!-- Lifelines -->
+    <line x1="90" y1="32" x2="90" y2="338" class="lifeline" />
+    <line x1="280" y1="32" x2="280" y2="338" class="lifeline" />
+    <line x1="480" y1="32" x2="480" y2="338" class="lifeline" />
+    <line x1="680" y1="32" x2="680" y2="338" class="lifeline" />
+
+    <!-- ① Pre-warm setup -->
+    <g class="step s1">
+      <text x="462" y="62" class="num">①</text>
+      <text x="580" y="52" class="label" data-pw-s1>
+        Connect + setup (persona, greeting card, its tools)
+      </text>
+      <line x1="480" y1="60" x2="680" y2="60" class="arrow accent" />
+      <polygon points="680,60 671,56 671,64" class="head accent" />
+      <circle cx="480" cy="60" r="4.5" class="pulse p-pool-live" />
+    </g>
+
+    <!-- ② setupComplete -->
+    <g class="step s2">
+      <text x="462" y="96" class="num">②</text>
+      <text x="580" y="86" class="label ok">
+        setupComplete (session ready, parked in the pool)
+      </text>
+      <line x1="680" y1="94" x2="480" y2="94" class="arrow ok" />
+      <polygon points="480,94 489,90 489,98" class="head ok" />
+      <circle cx="680" cy="94" r="4.5" class="pulse ok p-live-pool" />
+    </g>
+
+    <!-- The pre-warm gate -->
+    <line x1="25" y1="118" x2="735" y2="118" class="gate-line" />
+    <text x="735" y="112" class="gate-text">
+      ↑ Step 1: done in the background, before the user speaks · ↓ Step 2: the user says the wake word
+    </text>
+
+    <!-- ③ Wake word -->
+    <g class="step s3">
+      <text x="72" y="148" class="num">③</text>
+      <text x="185" y="138" class="label">
+        Wake word ("Hey Nova")
+      </text>
+      <line x1="90" y1="146" x2="280" y2="146" class="arrow accent" />
+      <polygon points="280,146 271,142 271,150" class="head accent" />
+      <circle cx="90" cy="146" r="4.5" class="pulse p-cli-app" />
+    </g>
+
+    <!-- ④ Hand over ready session -->
+    <g class="step s4">
+      <text x="262" y="182" class="num">④</text>
+      <text x="380" y="172" class="label ok">
+        Hand over a ready session (no handshake wait)
+      </text>
+      <line x1="480" y1="180" x2="280" y2="180" class="arrow ok" />
+      <polygon points="280,180 289,176 289,184" class="head ok" />
+      <circle cx="480" cy="180" r="4.5" class="pulse ok p-pool-app" />
+    </g>
+
+    <!-- ⑤ Optional contextUpdate -->
+    <g class="step s5">
+      <text x="262" y="220" class="num">⑤</text>
+      <text x="480" y="210" class="label ok" data-pw-s5>
+        No update needed: greeting card and tools are already loaded
+      </text>
+      <line x1="280" y1="218" x2="680" y2="218" class="arrow ok" stroke-dasharray="4 3" data-pw-line5 />
+      <polygon points="680,218 671,214 671,222" class="head ok" />
+      <circle cx="280" cy="218" r="4.5" class="pulse p-app-live1" />
+    </g>
+
+    <!-- ⑥ Opening turn -->
+    <g class="step s6">
+      <text x="262" y="258" class="num">⑥</text>
+      <text x="480" y="248" class="label" data-pw-s6>
+        Send the opening turn (with one short line of caller facts)
+      </text>
+      <line x1="280" y1="256" x2="680" y2="256" class="arrow accent" />
+      <polygon points="680,256 671,252 671,260" class="head accent" />
+      <circle cx="280" cy="256" r="4.5" class="pulse p-app-live2" />
+    </g>
+
+    <!-- ⑦ Duplex audio -->
+    <g class="step s7">
+      <text x="72" y="298" class="num">⑦</text>
+      <text x="385" y="288" class="label ok">
+        serverContent · 24 kHz PCM ("Hi Alex! How can I help?")
+      </text>
+      <line x1="680" y1="296" x2="90" y2="296" class="arrow ok" />
+      <polygon points="90,296 99,292 99,300" class="head ok" />
+
+      <text x="385" y="319" class="note">
+        realtimeInput · 16 kHz PCM (the user keeps talking)
+      </text>
+      <line x1="90" y1="326" x2="680" y2="326" class="arrow" />
+      <polygon points="680,326 671,322 671,330" class="head" />
+    </g>
+
+    {stream.map((d) => (
+      <circle class="pkt down" cx="678" cy="296" r="3.8" style={`animation-delay:${d}s, 0s`} />
+    ))}
+    {stream.map((d) => (
+      <circle class="pkt up" cx="92" cy="326" r="3.8" style={`animation-delay:${d + 0.2}s, 0s`} />
+    ))}
+  </svg>
+
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  document.querySelectorAll('.prewarm-diagram').forEach((root) => {
+    const buttons = root.querySelectorAll<HTMLButtonElement>('[data-pw-mode]');
+    const badge = root.querySelector<HTMLElement>('[data-pw-badge]');
+    const lblS1 = root.querySelector<SVGTextElement>('[data-pw-s1]');
+    const lblS5 = root.querySelector<SVGTextElement>('[data-pw-s5]');
+    const lblS6 = root.querySelector<SVGTextElement>('[data-pw-s6]');
+    const lineS5 = root.querySelector<SVGLineElement>('[data-pw-line5]');
+
+    buttons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.pwMode;
+        buttons.forEach((b) => b.classList.toggle('active', b === btn));
+        if (!badge || !lblS1 || !lblS5 || !lblS6 || !lineS5) return;
+
+        if (mode === 'fast') {
+          badge.textContent = 'No handshake wait · no update at handover';
+          badge.dataset.state = 'ok';
+          lblS1.textContent = 'Connect + setup (persona, greeting card, its tools)';
+          lblS5.textContent = 'No update needed: greeting card and tools are already loaded';
+          lblS5.setAttribute('class', 'label ok');
+          lineS5.setAttribute('stroke-dasharray', '4 3');
+          lblS6.textContent = 'Send the opening turn (with one short line of caller facts)';
+        } else if (mode === 'ctx') {
+          badge.textContent = 'No handshake wait · one update, sent in order';
+          badge.dataset.state = 'accent';
+          lblS1.textContent = 'Connect + setup (voice, language, base rules)';
+          lblS5.textContent = 'send_context_update(system_instruction, tools)';
+          lblS5.setAttribute('class', 'label accent');
+          lineS5.removeAttribute('stroke-dasharray');
+          lblS6.textContent = 'Then the opening turn, right behind it on the same socket';
+        } else {
+          badge.textContent = 'Old way: tools are fixed · context sits in history';
+          badge.dataset.state = 'warn';
+          lblS1.textContent = 'Connect + generic setup';
+          lblS5.textContent = 'No way to update: tools stay as they were in setup';
+          lblS5.setAttribute('class', 'label warn');
+          lineS5.setAttribute('stroke-dasharray', '2 4');
+          lblS6.textContent = 'clientContent(role="user", context + trigger): billed again each turn';
+        }
+      });
+    });
+  });
+</script>
+
+<style>
+  .prewarm-diagram { margin: 1.75rem 0; }
+  .prewarm-diagram svg { width: 100%; height: auto; overflow: visible; }
+  figcaption {
+    margin-top: 0.6rem;
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--gl-text-muted);
+  }
+
+  .prewarm-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding-bottom: 0.6rem;
+    margin-bottom: 0.6rem;
+    border-bottom: 1px solid var(--gl-track-border);
+    font-size: 0.78rem;
+  }
+  .prewarm-modes {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .prewarm-toolbar-label {
+    font-weight: 600;
+    color: var(--gl-text-primary);
+    margin-right: 0.2rem;
+  }
+  .pw-btn {
+    padding: 0.2rem 0.55rem;
+    border-radius: 0.35rem;
+    border: 1px solid var(--gl-track-border);
+    background: transparent;
+    color: var(--gl-text-muted);
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .pw-btn.active {
+    background: var(--sl-color-accent);
+    color: #fff;
+    border-color: var(--sl-color-accent);
+  }
+  .pw-badge {
+    font-family: var(--sl-font-mono, ui-monospace, monospace);
+    font-size: 0.74rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 0.35rem;
+    border: 1px solid var(--gl-track-border);
+    color: var(--gl-green-text);
+  }
+  .pw-badge[data-state="accent"] { color: var(--sl-color-accent); }
+  .pw-badge[data-state="warn"] { color: var(--gl-red-text); }
+
+  .actor-box {
+    fill: transparent;
+    stroke: var(--gl-track-border);
+    stroke-width: 1.25;
+  }
+  .actor {
+    font-size: 11.5px;
+    font-weight: 600;
+    text-anchor: middle;
+    fill: var(--gl-text-primary);
+  }
+  .lifeline {
+    stroke: var(--gl-track-border);
+    stroke-width: 1.5;
+    stroke-dasharray: 3 5;
+  }
+
+  .arrow { stroke: var(--gl-track-border); stroke-width: 1.5; }
+  .head { fill: var(--gl-track-border); }
+  .arrow.accent, .head.accent { stroke: var(--sl-color-accent); fill: var(--sl-color-accent); }
+  .arrow.ok, .head.ok { stroke: var(--gl-green-text); fill: var(--gl-green-text); }
+  .arrow.warn, .head.warn { stroke: var(--gl-red-text); fill: var(--gl-red-text); }
+
+  .label {
+    font-size: 11px;
+    text-anchor: middle;
+    fill: var(--gl-text-primary);
+    font-family: var(--sl-font-mono, ui-monospace, monospace);
+  }
+  .label.ok { fill: var(--gl-green-text); }
+  .label.accent { fill: var(--sl-color-accent); }
+  .label.warn { fill: var(--gl-red-text); }
+
+  .note {
+    font-size: 10.5px;
+    text-anchor: middle;
+    fill: var(--gl-text-muted);
+    font-style: italic;
+  }
+  .num {
+    font-size: 11.5px;
+    text-anchor: middle;
+    fill: var(--gl-text-muted);
+  }
+
+  .gate-line {
+    stroke: var(--gl-green-text);
+    stroke-width: 1.5;
+    stroke-dasharray: 6 4;
+    opacity: 0.6;
+  }
+  .gate-text {
+    font-size: 10.5px;
+    text-anchor: end;
+    fill: var(--gl-green-text);
+  }
+
+  .step { opacity: 0.18; }
+  .s1 { animation: reveal 11s linear infinite; animation-delay: 0s; }
+  .s2 { animation: reveal 11s linear infinite; animation-delay: 1.0s; }
+  .s3 { animation: reveal 11s linear infinite; animation-delay: 2.3s; }
+  .s4 { animation: reveal 11s linear infinite; animation-delay: 3.1s; }
+  .s5 { animation: reveal 11s linear infinite; animation-delay: 4.0s; }
+  .s6 { animation: reveal 11s linear infinite; animation-delay: 4.7s; }
+  .s7 { animation: reveal-hold 11s linear infinite; animation-delay: 5.6s; }
+
+  @keyframes reveal {
+    0%        { opacity: 0.18; }
+    4%, 90%   { opacity: 1; }
+    96%, 100% { opacity: 0.18; }
+  }
+  @keyframes reveal-hold {
+    0%        { opacity: 0.18; }
+    4%, 88%   { opacity: 1; }
+    95%, 100% { opacity: 0.25; }
+  }
+
+  .pulse { fill: var(--sl-color-accent); }
+  .pulse.ok { fill: var(--gl-green-text); }
+  .p-pool-live { animation: move-pool-live 11s linear infinite; }
+  .p-live-pool { animation: move-live-pool 11s linear infinite; animation-delay: 1.0s; }
+  .p-cli-app   { animation: move-cli-app 11s linear infinite; animation-delay: 2.3s; }
+  .p-pool-app  { animation: move-pool-app 11s linear infinite; animation-delay: 3.1s; }
+  .p-app-live1 { animation: move-app-live 11s linear infinite; animation-delay: 4.0s; }
+  .p-app-live2 { animation: move-app-live 11s linear infinite; animation-delay: 4.7s; }
+
+  @keyframes move-pool-live {
+    0%        { transform: translateX(0); opacity: 0; }
+    1.5%      { opacity: 1; }
+    7%        { transform: translateX(200px); opacity: 1; }
+    8%, 100%  { transform: translateX(200px); opacity: 0; }
+  }
+  @keyframes move-live-pool {
+    0%        { transform: translateX(0); opacity: 0; }
+    1.5%      { opacity: 1; }
+    7%        { transform: translateX(-200px); opacity: 1; }
+    8%, 100%  { transform: translateX(-200px); opacity: 0; }
+  }
+  @keyframes move-cli-app {
+    0%        { transform: translateX(0); opacity: 0; }
+    1.5%      { opacity: 1; }
+    6%        { transform: translateX(190px); opacity: 1; }
+    7%, 100%  { transform: translateX(190px); opacity: 0; }
+  }
+  @keyframes move-pool-app {
+    0%        { transform: translateX(0); opacity: 0; }
+    1.5%      { opacity: 1; }
+    6%        { transform: translateX(-200px); opacity: 1; }
+    7%, 100%  { transform: translateX(-200px); opacity: 0; }
+  }
+  @keyframes move-app-live {
+    0%        { transform: translateX(0); opacity: 0; }
+    1.5%      { opacity: 1; }
+    7.5%      { transform: translateX(400px); opacity: 1; }
+    8.5%, 100%{ transform: translateX(400px); opacity: 0; }
+  }
+
+  .pkt.down {
+    fill: var(--gl-green-text);
+    animation: stream-left 1.3s linear infinite, gate-stream 11s linear infinite;
+  }
+  .pkt.up {
+    fill: var(--sl-color-accent);
+    animation: stream-right 1.3s linear infinite, gate-stream 11s linear infinite;
+  }
+  @keyframes stream-left {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-590px); }
+  }
+  @keyframes stream-right {
+    from { transform: translateX(0); }
+    to   { transform: translateX(590px); }
+  }
+  @keyframes gate-stream {
+    0%, 51%   { opacity: 0; }
+    55%, 88%  { opacity: 1; }
+    93%, 100% { opacity: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .step, .pulse, .pkt { animation: none !important; }
+    .step { opacity: 1; }
+    .pulse { opacity: 0; }
+    .pkt { opacity: 0; }
+  }
+</style>

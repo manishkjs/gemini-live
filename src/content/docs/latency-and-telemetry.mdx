@@ -5,6 +5,7 @@ description: Measuring true voice-to-voice turn latency, token telemetry, and Op
 
 import LatencyWaterfall from '../../components/LatencyWaterfall.astro';
 import OneMinute from '../../components/OneMinute.astro';
+import PrewarmSequence from '../../components/PrewarmSequence.astro';
 
 <OneMinute
   what="How to measure the delay a caller feels (last word spoken to first sound back) and the tokens (billing units) each turn consumes."
@@ -35,7 +36,74 @@ When logging latency in production, always record **Total Turn Latency** (`speec
 
 ---
 
-## 2. Reading `usageMetadata` on every turn
+## 2. Skip the connection wait with pre-warmed sessions
+
+Before the model can answer, your server has to open a WebSocket, send `setup`, and wait for `setupComplete`. If that work starts only when the user speaks, the user hears silence until it finishes.
+
+Pre-warming moves that work earlier. Your backend opens a few sessions ahead of time, finishes setup, and keeps them ready. When a user says the wake word or a call arrives, you hand over a ready session and the model can answer right away.
+
+<PrewarmSequence />
+
+### How it works
+
+1. Before the user speaks: a small pool on your backend opens sessions, sends `setup`, waits for `setupComplete`, and parks them.
+2. When the user speaks: your app server takes a parked session from the pool and sends the opening turn.
+
+To see what you gain, log the time from opening the WebSocket to receiving `setupComplete` on a normal cold connection. That is the wait pre-warming removes from the first turn.
+
+### What to load into a parked session
+
+Voice and language are set in `setup` and stay fixed for the session. Instructions and tools can be replaced later with `session.send_context_update()` (`google-genai >= 2.32.0` on `gemini-3.8-live`). That gives you two ways to run a pool:
+
+| | Greeting already loaded | Shared pool |
+| :--- | :--- | :--- |
+| What `setup` contains | Your real persona, the greeting card, and the greeting card's tools | Voice, language, and your base rules |
+| What you send at handover | The opening turn only | `send_context_update()` with the workflow's card and tools, then the opening turn |
+| Good fit | Products where every user starts at the same greeting | Gateways that serve several workflows from one pool |
+
+The SDK processes a context update in order with your other inputs, so you can send the update and the opening turn one after the other on the same socket. The SDK also notes that an update "might have a performance impact on model generation". With the greeting already loaded, there is no update at handover, so the first reply does not carry that cost. Measure both options on your own traffic before you choose.
+
+```python
+# warm_pool is your own helper. It returns a session that already received setupComplete.
+
+# Option 1: greeting already loaded. Send the opening turn only.
+session = await warm_pool.acquire(model="gemini-3.8-live", voice="Puck", language="en-IN")
+await session.send_client_content(
+    turns=types.Content(
+        role="user",
+        parts=[types.Part(text="(The device woke up. The user has not spoken yet. Caller name: Alex.)")],
+    ),
+    turn_complete=True,
+)
+
+# Option 2: shared pool. Load this workflow's card and tools, then send the opening turn.
+session = await warm_pool.acquire(model="gemini-3.8-live", voice="Puck", language="en-IN")
+await session.send_context_update(
+    system_instruction=BASE_RULES + ORDER_SUPPORT_CARD + session_state,
+    tools=[lookup_order_status, issue_refund],
+)
+await session.send_client_content(
+    turns=types.Content(
+        role="user",
+        parts=[types.Part(text="(The device woke up. The user has not spoken yet.)")],
+    ),
+    turn_complete=True,
+)
+```
+
+In Option 1, one short line of caller facts in the opening turn is enough to greet the user by name. Older turns are trimmed as the call grows, so copy those facts into the session state block of your system instruction at the first card change.
+
+### Keeping the pool healthy
+
+- Keep one pool per model, voice, and language. A context update cannot change the voice or the language.
+- Replace parked sessions before they get old. A connection lasts about 10 minutes, and that clock runs while the session waits in the pool. Hand out fresh sessions and close the ones that have waited too long.
+- Do not send silence to a parked session. Audio input is billed at about 25 tokens per second, so silence sent to keep a session alive costs money and adds nothing.
+- Confirm support before you rely on it. On the Gemini Developer API, check that your API key has `contextUpdate` access. `gemini-live-2.5-flash-native-audio` rejects `contextUpdate` with close code `1007`.
+- On wearables, close the link from the device when it is idle. Open the connection from the device to your backend when it is worn or woken, and close it after a few minutes without speech. An open radio link is what drains the battery. The parked sessions live on your backend and do not depend on it.
+
+---
+
+## 3. Reading `usageMetadata` on every turn
 
 At the end of every model turn (alongside `turnComplete`), the server emits a `usageMetadata` payload breaking down exact token consumption by modality:
 
@@ -60,7 +128,7 @@ async for response in session.receive():
 
 ---
 
-## 3. OpenTelemetry per-turn span instrumentation
+## 4. OpenTelemetry per-turn span instrumentation
 
 Emit one OpenTelemetry child span per conversational turn (`gemini_live.turn`) attached to the parent call trace:
 

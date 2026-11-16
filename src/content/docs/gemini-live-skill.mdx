@@ -299,6 +299,17 @@ if getattr(self, "_current_turn_ttft", None) is None and getattr(self, "_my_ttfb
   - Accumulate token and cost metrics strictly once per turn on the discrete `usage` event (`turnComplete`), never inside streaming audio chunk callbacks (`onMessage`) which fire 15 to 30 times per turn.
   - Normalize Python GenAI SDK `MediaModality` enums (`str(m.modality).split(".")[-1].upper()`) before JSON serialization so keys like `"mediamodality.text"` never break modality rate-card lookups in TypeScript.
 
+### D. Pre-Warmed Session Pools & Handover Modes
+* **Why pre-warm**: Opening a WebSocket, sending `setup`, and waiting for `setupComplete` adds a cold-start wait before the first turn. A backend pool opens sessions ahead of time, waits for `setupComplete`, and parks them so wake-word devices or inbound calls can start immediately.
+* **Two ways to load a parked session**:
+  - **Greeting already loaded**: Put your real persona, greeting card, and greeting card's tools in `setup`. At handover, send only the opening turn (with one short line of caller facts if needed, and copy those facts into the `systemInstruction` session state block at the first card change). No `send_context_update()` is needed at handover.
+  - **Shared pool + context update**: Put voice, language, and base rules in `setup`. At handover, call `await session.send_context_update(system_instruction=..., tools=...)` (`google-genai >= 2.32.0` on `gemini-3.8-live`) followed by the opening turn on the same socket. The SDK processes context updates in order with other inputs, and notes that an update "might have a performance impact on model generation".
+* **Pool hygiene**:
+  - Group parked sessions by `(model, voiceName, languageCode)` because `send_context_update()` cannot change `speechConfig`.
+  - Replace parked sessions before they hit the ~10-minute connection lifetime limit.
+  - Never stream silence into a parked session to keep it alive (audio input is billed at about 25 tokens per second).
+  - On battery-powered wearables, open the device-to-backend link when worn or woken and close it after a few minutes without speech.
+
 ---
 
 ## 7. Tool-Calling Architecture, Cancellation Shield & `CallSlots` Pattern
